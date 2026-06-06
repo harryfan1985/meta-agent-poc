@@ -1,1 +1,55 @@
 # meta-agent-poc
+
+> Spec 驱动的多 Agent 编码系统 —— 论文 *Meta-Agent: From Task Descriptions to Verified Multi-Agent Systems* 的工程落地 PoC。
+
+把"为某个任务搭一套多 agent 系统"本身变成一条**自动化流水线**:
+
+```
+自然语言任务描述
+  └─▶ 编译出带 I/O 契约与验证标准的 agent DAG
+       └─▶ 为每个节点生成可执行 agent 代码
+            └─▶ 构造期 + 执行期双重验证
+                 └─▶ 失败时按「错误类型」做最小代价回退
+```
+
+核心论断:reliability 不靠事后 self-reflection 补救,而是把**显式、结构化的验证**贯穿构造与执行两个阶段,并用**三级错误归因**(local < upstream < structural)让恢复成本与错误局部性成正比。
+
+## 当前状态
+
+**设计阶段** —— 目前仓库只有完整的实现方案,尚无代码。
+
+- 📄 **[docs/meta_agent_spec_driven_plan.md](docs/meta_agent_spec_driven_plan.md)** —— 唯一的设计真相源(数据模型、构造期/执行期设计、错误归因、技术选型、落地路线、评测协议)。
+- 📄 **[AGENTS.md](AGENTS.md)** —— 给在本仓库工作的 AI agent / 协作者的项目指引。
+
+## 系统组成
+
+| 阶段 | 组件 | 职责 |
+|---|---|---|
+| 构造期 Stage 1 | `IntentParser` | 任务描述 → 结构化 `ParsedIntent`(含 web 检索补任务示例) |
+| 构造期 Stage 2 | `SwarmPlanner` | 分解为少量子任务 → `AgentSpec` 列表 + DAG |
+| 构造期 Stage 3 | `GroundingResearcher` | 按 spec 定向检索,把外部知识写回 spec |
+| 构造期 Stage 4 | `AgentCodeGen` | 每个 spec → 带 `run(message, history)` 接口的 Python 模块 |
+| 构造期 Stage 5 | `ConstructionVerifier` | 静态 + 行为双检,产出**带类型**的失败信号 |
+| 执行期 | `Coordinator` / `ContextStore` | 按 DAG 拓扑序调度,路由中间产物 |
+| 执行期 | `RuntimeGate` | 每个中间输出消费前校验 `yᵢ ∈ Cᵢ` |
+| 执行期 | `ErrorAttributor` + `RecoveryRouter` | 分类 local / upstream / structural 并选恢复策略 |
+
+## 落地路线
+
+| 里程碑 | 内容 |
+|---|---|
+| **M0** | Pydantic schema + `Coordinator` + `ContextStore` + 拓扑执行 + DAG 环检测;手写复刻论文 4-agent swarm 跑通执行期 |
+| **M1** | `RuntimeGate` + `ErrorAttributor` + `RecoveryRouter`;四类错误归因单测 |
+| **M2** | 构造期 Stage 1→5 全流水线;带类型失败信号 + 类型化路由 |
+| **M3** | 6 个 benchmark 跑分 + 消融 + 成本预算 + 沙箱加固 |
+
+详见 [设计文档 §8](docs/meta_agent_spec_driven_plan.md)。
+
+## 技术栈
+
+- **Python 3.11+** —— 生成产物即 Python 模块
+- **Anthropic API**(默认,可插拔)—— 框架 executor-agnostic,各组件可分别配模型
+- **Pydantic** —— 所有 Stage 产物按 schema 强校验
+- **沙箱执行** —— 生成代码默认不可信,强隔离 + 禁网 + 超时 + 资源上限
+
+> 论文出处:Andy Xu, Yu-Wing Tai (Dartmouth), arXiv:2605.25233, NeurIPS 2026。
