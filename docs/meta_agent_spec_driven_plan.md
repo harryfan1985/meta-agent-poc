@@ -36,7 +36,7 @@
 **【论文】** 附录 A/B/C 给出了 `ParsedIntent`、`SwarmPlan`、`AgentSpec`(含 `io_contract` 与 `verification_criteria`)的确切字段。下面用 Pydantic 还原为可执行 schema,这是整个系统的"spec 真相源"。
 
 ```python
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PrivateAttr
 from typing import Literal, Optional
 from enum import Enum
 
@@ -49,16 +49,32 @@ class TaskExample(BaseModel):
 class ParsedIntent(BaseModel):
     goal: str
     domain: str
-    tone: str
+    tone: str = ""                        # 论文遗留字段;code/math 任务通常为空
     entities: list[str]
     constraints: list[str]
     task_examples: list[TaskExample]      # 论文:覆盖任务空间的 5~8 类示例
 
 # ---------- Agent Spec(DAG 节点) ----------
-class IOContract(BaseModel):
-    input_schema: dict                    # {field: "type -- desc"} 形式
-    output_schema: dict
+# 【工程补全】字段必须可机判:不是 "type -- desc" 自由串,而是结构化 FieldSpec,
+# 可直接编译成 JSON Schema 交 jsonschema/Pydantic 在 RuntimeGate 做机判校验。
+class FieldSpec(BaseModel):
+    type: Literal["string", "number", "integer",
+                  "boolean", "array", "object"]
     description: str
+    items: Optional[dict] = None          # array 元素 schema(JSON Schema 片段)
+    enum: Optional[list] = None           # 取值枚举(可选)
+
+class IOContract(BaseModel):
+    input_schema: dict[str, FieldSpec]    # {field: FieldSpec};键即字段名
+    output_schema: dict[str, FieldSpec]
+    required_in: list[str] = []           # 必填输入字段(其余视为可选)
+    required_out: list[str] = []          # 必填输出字段
+    description: str
+
+    def out_jsonschema(self) -> dict:     # 编译成标准 JSON Schema,供机判校验
+        return {"type": "object", "required": self.required_out,
+                "properties": {k: v.model_dump(exclude_none=True)
+                               for k, v in self.output_schema.items()}}
 
 class VerificationCriteria(BaseModel):
     behavioral_assertions: list[str]      # 可执行/可判定的行为断言
@@ -125,12 +141,9 @@ class ExecutableSwarm(BaseModel):
     plan: SwarmPlan                       # specs + dag_edges(已通过环检测)
     artifacts: dict[str, AgentArtifact]   # spec_id -> 构造凭证(passed=True)
 
-    class Config:
-        arbitrary_types_allowed = True    # _loaded 持有运行时 callable
-
-    # spec_id -> 已加载的 run(message, history) callable;
-    # 由 loader 在执行前 importlib 加载 artifact.module_path 填充,不进序列化。
-    _loaded: dict = {}
+    # spec_id -> 已加载的 run(message, history) callable;由 loader 在执行前
+    # importlib 加载 artifact.module_path 填充。PrivateAttr:不进序列化、非共享默认值。
+    _loaded: dict = PrivateAttr(default_factory=dict)
 
     def spec(self, spec_id: str) -> AgentSpec:
         return next(s for s in self.plan.specs if s.spec_id == spec_id)
@@ -172,6 +185,19 @@ class StructuredFeedback(BaseModel):
     expected: str                         # spec 要求的样子
     actionable_fix: str                   # 下一轮 refine 的具体改法(非"judge 分")
 
+# 顶层类型优先级:多 aspect/多检查同时失败时,取优先级最高者做路由(见 §3.7)
+FAILURE_PRIORITY = [FailureType.CONTRACT,      # 分解/契约问题最该先处理
+                    FailureType.GROUNDING,
+                    FailureType.SPEC_ADHERENCE]
+
+# 【工程补全】构造期 ConstructionVerifier 与执行期 RuntimeGate **共用**的验证结果。
+# 两条轴都在这里:failure_type 管路由(轴 A)、feedback 管修复(轴 B),
+# 与 FailureSignal 同构,保证 rubric 反馈能一路流到 refine,而非退化成扁平字符串。
+class GateResult(BaseModel):
+    ok: bool
+    failure_type: Optional[FailureType] = None    # 轴 A
+    feedback: list[StructuredFeedback] = []       # 轴 B(同 FailureSignal)
+
 class FailureSignal(BaseModel):
     spec_id: str
     failure_type: FailureType             # 轴 A:决定回退阶段(§6)
@@ -189,7 +215,7 @@ class FailureSignal(BaseModel):
 
 总入口:`construct(task_description: str) -> ExecutableSwarm`。五个 Stage 串行,任一 Stage 的产物都要过验证才进入下一步。
 
-### Stage 1 — IntentParser
+### 3.1 Stage 1 — IntentParser
 
 **【论文】** 把 T 解析成 `ParsedIntent`;同时用 `web_search` 拉回**跨任务类型的代表性示例**(论文里 function-completion 拉了 7 类、math 拉了 7 类、DROP 拉了 8 类),目的是让后续规划"见过任务空间的形状"。
 
@@ -206,7 +232,7 @@ attach one concrete example with a real source_url retrieved via web_search.
 Constraints must be atomic and checkable.
 ```
 
-### Stage 2 — SwarmPlanner
+### 3.2 Stage 2 — SwarmPlanner
 
 **【论文】** 把任务分解成**少量**子任务(三个 running example 都是 4 个 agent),组织成 DAG;为每个节点产出完整 `AgentSpec`(role / tools / dependencies / io_contract / verification_criteria)。`coordination_strategy` 用自然语言描述严格拓扑序的分阶段执行。
 
@@ -219,7 +245,7 @@ Constraints must be atomic and checkable.
 - **少而清晰的分解**:典型 4 节点,最后一个通常是 verifier/formatter 角色。
 - **契约可追溯**:下游输入 schema 的每个字段都应能在某个上游输出 schema 找到来源。
 
-### Stage 3 — GroundingResearcher(设计期 grounding)
+### 3.3 Stage 3 — GroundingResearcher(设计期 grounding)
 
 **【论文】** grounding 放在**构造期**而非执行期:对每个"需要外部知识"的 spec 发一条**定向检索 directive**(one search per agent),把结果(`research_summary` + 带 provenance 的 API/文档推荐)写回该 spec 的 `grounding` 字段。论文强调这能"在生成前就让 agent 拿到所需知识",显著降低执行期因信息缺失导致的验证失败。
 
@@ -228,7 +254,7 @@ Constraints must be atomic and checkable.
 - 产出 `recommendations[]`(name / url / auth_method / relevance_score)和 `directive_results[]`(per-spec summary)。
 - **【工程补全】** 对不需要外部知识的纯推理 agent(如论文 math 的 solver,tools=[]),跳过检索。
 
-### Stage 4 — AgentCodeGen
+### 3.4 Stage 4 — AgentCodeGen
 
 **【论文】** 把每个 spec 编译成一个**带标准接口 `run(message, history)` 的可执行 Python 模块**,内含该 agent 的系统提示和工具配置。注意:本阶段产物是"完整可执行的多 agent 系统",不是高层计划。
 
@@ -251,7 +277,7 @@ def run(message: dict, history: list) -> dict:
 
 **【工程补全,可选旋钮:BoN 候选选优,借鉴 BoN-MAV / arXiv:2502.20379】** 默认是"生成 1 个 → 构造期验证 → 失败带反馈顺序重试(≤3 pass)",但论文 math classifier 把 3 次 pass 用满,churn 重。可改为**并行 BoN**:一次生成 N 个候选实现 → 全部过 §3.7 多 aspect 构造期验证 → **按赞成数选最优**;只有最优仍不过才进入顺序 refine 循环。这是"**token 换往返次数与首过率**"的权衡旋钮(`N` 可配,默认 1 即退回顺序模式),BoN+多验证器的扩展性优于 self-consistency。
 
-### Stage 5 — ConstructionVerifier(构造期验证)
+### 3.5 Stage 5 — ConstructionVerifier(构造期验证)
 
 **【论文】** 对每个生成的 agent `âᵢ` 验证其是否满足 spec `σᵢ`,两类互补检查:
 
@@ -264,7 +290,7 @@ def run(message: dict, history: list) -> dict:
 - 静态检查:`importlib` 试加载 + `inspect` 校验 `run` 签名 + AST 扫 `forbidden_patterns`(如禁止第三方 import 时,扫 import 节点)。
 - 行为检查:为每个 `behavioral_assertion` 构造小输入,跑 agent,断言里能机判的(签名逐字符匹配、禁用 import)直接用代码判,省 token;**机判覆盖不到的语义断言走 §3.7 的多 aspect 验证器面板**(赞成聚合,结果仍映射成带类型失败信号)。**【工程补全】** 断言尽量"代码可判 > 模型判",降低成本与误判。
 
-### 3.6 — 工具注册表(Tool Registry,横切 Stage 3/4/执行期)
+### 3.6 工具注册表(Tool Registry,横切 Stage 3/4/执行期)
 
 **【工程补全】** 论文反复点名"工具格式错误"是 Stage 4 的典型失败源(math Pass 2:`web_search` 用了 server-side 格式、需要特定 SDK 处理)。根因是**让模型自由拼工具定义**。本方案用一个**单一出口**的注册表消除这个自由度:`spec.tools` 全程只携带抽象名,真实定义只能从注册表取。
 
@@ -285,7 +311,7 @@ class ToolRegistry:
 
 新增/变更工具只动注册表一处,生成代码与 spec 都无需改 —— 这也是"跨模型可迁移"(§9)的工程前提之一。
 
-### 3.7 — 多 Aspect 验证器面板(MAV,**仅用于模型判残差**)
+### 3.7 多 Aspect 验证器面板(MAV,**仅用于模型判残差**)
 
 **【工程补全,借鉴 Multi-Agent Verification, arXiv:2502.20379】** 我们坚持"机判优先"(§3.5/§4.3):能用代码判定的断言(签名逐字符匹配、AST 扫 import、schema 校验)一律机判,确定性强、近乎零成本。但总有一部分语义类断言**只能靠模型判**。这部分目前的薄弱点是"**一个 verifier 模型给布尔**"。
 
@@ -294,20 +320,29 @@ MAV 的结论可直接补强这一残差:**多个多样化的 aspect verifier + 
 设计:把模型判残差从"一个 verifier"换成"**一个 aspect 面板**",每个 aspect 一个独立 verifier 调用,按赞成数聚合;**但保留我们的类型化包裹** —— 不退化成纯布尔投票。
 
 ```python
-ASPECTS = ["correctness", "contract_adherence", "forbidden_pattern", "role_confinement"]
+# aspect → (顶层 failure_type 轴 A, 细粒度 subtype 轴 B)
+ASPECT_MAP = {
+    "correctness":        (FailureType.SPEC_ADHERENCE, FailureSubtype.SCHEMA_VIOLATION),
+    "contract_adherence": (FailureType.CONTRACT,       FailureSubtype.FIELD_MISMATCH),
+    "forbidden_pattern":  (FailureType.SPEC_ADHERENCE, FailureSubtype.FORBIDDEN_HIT),
+    "role_confinement":   (FailureType.SPEC_ADHERENCE, FailureSubtype.ROLE_CONFUSION),
+}
 
 def panel_verify(output, criteria, aspect_models) -> GateResult:
-    votes = {a: aspect_models[a].approve(output, criteria, aspect=a) for a in ASPECTS}
-    if all(votes.values()):
+    # 每个 aspect 独立投票,不赞成时同时给出 rubric 结构化反馈(轴 B)
+    fb = []
+    for aspect, (ftype, subtype) in ASPECT_MAP.items():
+        verdict = aspect_models[aspect].approve(output, criteria, aspect=aspect)
+        if not verdict.ok:                 # verdict 带 evidence/expected/fix(source-checkable)
+            fb.append(StructuredFeedback(subtype=subtype, evidence=verdict.evidence,
+                                         expected=verdict.expected, actionable_fix=verdict.fix))
+    if not fb:
         return GateResult(ok=True)
-    # 关键:把"哪个 aspect 不赞成"映射回 failure_type,喂给 §5/§6 的类型化路由
-    failed = [a for a, ok in votes.items() if not ok]
-    return GateResult(ok=False, failure_type=ASPECT_TO_FAILURE[failed[0]], issues=failed)
-
-ASPECT_TO_FAILURE = {
-    "correctness": "spec_adherence", "contract_adherence": "contract",
-    "forbidden_pattern": "spec_adherence", "role_confinement": "spec_adherence",
-}
+    # 多 aspect 同时失败:failure_type 取 FAILURE_PRIORITY 中最高者(轴 A,不丢信息)
+    failed_types = {ASPECT_MAP[a][0] for a in ASPECT_MAP
+                    if any(f.subtype == ASPECT_MAP[a][1] for f in fb)}
+    ftype = next(t for t in FAILURE_PRIORITY if t in failed_types)
+    return GateResult(ok=False, failure_type=ftype, feedback=fb)
 ```
 
 边界(**务必遵守**):
@@ -367,7 +402,9 @@ def gather_inputs(self, spec_id, swarm):
         sources = [d for d in deps
                    if self.has(d) and field in swarm.spec(d).io_contract.output_schema]
         if not sources:
-            unresolved.append(field)                      # 没有上游能提供 → 缺字段
+            if field in spec.io_contract.required_in:     # 仅必填字段缺失才算缺
+                unresolved.append(field)
+            # 可选字段无来源 → 跳过,不报错
         elif len(sources) > 1:
             conflicts[field] = sources                    # 多个上游都产出同名字段 → 歧义
         else:
@@ -388,7 +425,9 @@ def gather_inputs(self, spec_id, swarm):
 
 **【论文】** 公式 (2):中间输出 `yᵢ` 在传给下游前,验证 `yᵢ ∈ Cᵢ`,其中 `Cᵢ` 编码 schema 约束、行为断言、forbidden patterns。不通过则**不向下游传播**,并触发恢复。
 
-实现:`schema 校验(机判)→ forbidden_patterns 扫描(机判)→ behavioral_assertions(机判优先,necessary 时走 §3.7 多 aspect 验证器面板)`,任一不过即 `gate.ok=False` 并附 `failure_type` 与 `issues`。面板的赞成聚合结果按 §3.7 映射成 `failure_type`,直接喂给 §5 的 `ErrorAttributor`。
+实现:`schema 校验(机判,用 §2 `out_jsonschema()`)→ forbidden_patterns 扫描(机判)→ behavioral_assertions(机判优先,necessary 时走 §3.7 多 aspect 验证器面板)`,任一不过即返回 `GateResult(ok=False, ...)`。
+
+**统一产物**:RuntimeGate 与构造期 ConstructionVerifier 都返回 §2 的 `GateResult` —— 同时带 `failure_type`(轴 A)与 `feedback: list[StructuredFeedback]`(轴 B)。**机判项失败也要产出 `StructuredFeedback`**(如 schema 校验失败 → `subtype=SCHEMA_VIOLATION`,`evidence` 指向具体字段、`expected` 取 `out_jsonschema` 该字段、`actionable_fix` 描述补法),不只机判面板。这样 rubric 反馈能一路流到 §5 的 refine,**不退化成扁平字符串**;`failure_type` 多个时按 `FAILURE_PRIORITY` 取最高者。`GateResult` 直接喂给 §5 的 `ErrorAttributor`。
 
 ---
 
@@ -423,11 +462,11 @@ def classify(spec_id, gate, store, swarm):
         if store.has(d) and not RuntimeGate.recheck(store.get(d), swarm.spec(d)):
             return Recovery(kind="upstream", target=d)
     # 2) 失败信号指向契约/分解不匹配(下游需要的字段上游根本没产出)→ structural
-    if gate.failure_type == "contract" or missing_required_field(gate, store):
+    if gate.failure_type == FailureType.CONTRACT or missing_required_field(gate, store):
         return Recovery(kind="structural", subgraph=affected_subgraph(spec_id, swarm))
-    # 3) 否则本地重试(带反馈),超过上限再升级
+    # 3) 否则本地重试(带结构化反馈 §2 StructuredFeedback),超过上限再升级
     if local_retries(spec_id) < MAX_LOCAL_RETRIES:    # 【工程补全】默认 2
-        return Recovery(kind="local", target=spec_id, feedback=gate.issues)
+        return Recovery(kind="local", target=spec_id, feedback=gate.feedback)
     return Recovery(kind="structural", subgraph=affected_subgraph(spec_id, swarm))
 ```
 
@@ -468,25 +507,82 @@ def classify(spec_id, gate, store, swarm):
 >
 > **非目标(硬边界):本项目不触碰任何模型训练 / 微调 / SFT。** 范围严格限定 **spec-driven、训练自由**:所有组件(planner/codegen/verifier/executor)只用**现成模型** + 机判 + rubric/分类法等规则层机制。借鉴外部工作时(如 DeepVerifier 的 DeepVerifier-4K SFT 数据集)**只取其 spec/规则层思路,剔除一切训练/微调部分**。验证器变强靠"多 aspect 面板 + rubric 结构化反馈"(§3.7/§2),不靠训练。
 
+### 7.1 沙箱(生成代码执行)
+
+生成代码**默认不可信**,执行分三档隔离强度,按部署环境取:
+
+| 档位 | 机制 | 适用 |
+|---|---|---|
+| **MVP** | `subprocess` + `resource` 限额(CPU/内存/文件大小)+ `signal` 超时 + 临时 `cwd` + 清空环境变量 | 本地开发/CI,信任度尚可 |
+| **加固** | 容器 + seccomp-bpf 系统调用白名单 + cgroups 资源墙 + 默认 `--network none` | 生产默认 |
+| **强隔离** | gVisor / Firecracker microVM | 多租户/对抗环境 |
+
+统一约束(各档都要):**默认禁网**,仅 `ToolDefinition.requires_network=True` 的工具经 §3.6 `handler` 走受控代理出网;文件系统按 `side_effects` 授权(默认只读临时目录);墙钟超时 + 输出大小上限;**禁止从 grounding/检索文本里执行任何指令**(防注入,§10)。
+
+### 7.2 统一预算模型
+
+各级重试上限散落多处,这里收成一个对象,贯穿构造期与执行期,触顶即 `surface failure`(§5)。
+
+```python
+class Budget(BaseModel):
+    max_llm_calls: int = 200          # 全局 LLM 调用上限
+    max_tokens: int = 2_000_000       # 全局 token 上限
+    max_wall_seconds: int = 1800      # 墙钟上限
+    max_local_retries: int = 2        # 单 agent 本地重试(§5)
+    max_construct_passes: int = 3     # 单 agent 构造期验证 pass(§3.5,论文上限)
+    max_replans: int = 2              # structural 重规划次数
+    bon_n: int = 1                    # §3.4 BoN 候选数,1=关闭
+
+class BudgetMeter(BaseModel):         # 运行时累计,任一超限 → raise BudgetExceeded
+    llm_calls: int = 0; tokens: int = 0; started_at: float = 0
+```
+
+所有重试/重跑/重规划在动作前 `meter.check(budget)`;超限**不再尝试**,直接 surface 当前最佳 `GateResult` 与失败原因,而非给未验证答案。
+
+### 7.3 Trace Schema(可观测,且为"分类法进化"提供数据)
+
+逐 Stage / agent / verification pass 全量结构化 trace。它不仅是日志,还是 §5 future-work"`FailureSubtype` 随 trace 增长"的**数据源**,故需 schema 化。
+
+```python
+class TraceEvent(BaseModel):
+    ts: str                           # ISO 时间戳
+    phase: Literal["construct", "execute"]
+    stage: str                        # e.g. "stage2_plan" / "runtime_gate"
+    spec_id: Optional[str] = None
+    event: Literal["start", "llm_call", "gate_result",
+                   "recovery", "budget", "finish"]
+    gate_result: Optional[GateResult] = None   # 含 failure_type + 结构化 feedback
+    recovery_kind: Optional[str] = None        # local/upstream/structural
+    tokens: int = 0; latency_ms: int = 0
+    payload: dict = {}                # 输入/输出摘要(脱敏)
+```
+
+一条任务的执行 = 一串 `TraceEvent`,可回放、可做消融对比、可聚类失败(`gate_result.feedback[].subtype` 是天然聚类键)。MVP 落地为 JSONL,生产换可回放事件日志(§7 存储行)。
+
 ---
 
 ## 8. 分阶段落地路线
 
+> **排期原则**:先打平论文 baseline(M0–M2,只用论文机制 + 必要的可机判收口),**再叠加 MAV/DeepVerifier 增强(M3)**。aspect 面板(§3.7)、BoN 旋钮(§3.4)、轴 B 的 rubric 反馈属于"锦上添花",**不进 PoC 前期**,避免一上来背全套。
+
 **Milestone 0 — 骨架与 schema(1~2 周)**
-- 落地 §2 全部 Pydantic 模型;搭 `Coordinator` + `ContextStore` + 拓扑执行 + DAG 环检测。
+- 落地 §2 全部 Pydantic 模型(含**可机判的 `IOContract`/`FieldSpec`/`out_jsonschema`**、统一 `GateResult`);搭 `Coordinator` + `ContextStore`(含 `gather_inputs` §4.2)+ 拓扑执行 + DAG 环检测。
 - 手写一个 4-agent swarm(直接复刻论文附录 A 的 function-completion 四节点)跑通执行期,先不接构造期。验收:`has_close_elements` 例子端到端 PASS。
 
-**Milestone 1 — 执行期验证 + 三级归因(1~2 周)**
-- 实现 `RuntimeGate`(schema/forbidden/assertion 三检)+ `ErrorAttributor` + `RecoveryRouter`。
+**Milestone 1 — 执行期验证 + 三级归因 + 结构化反馈(1~2 周)**
+- 实现 `RuntimeGate`(schema/forbidden/assertion 三检,**全部机判**)+ `ErrorAttributor` + `RecoveryRouter`。
+- 落地**两条轴**:`GateResult` 产出 `failure_type`(轴 A)+ `StructuredFeedback`(轴 B,先做机判项的 evidence/expected/fix);local 重试消费结构化反馈。
 - 用论文 §3.3 的四个归因场景做单测(local / upstream / contract / structural 各一)。验收:注入 4 类错误都能被正确分类并恢复。
 
-**Milestone 2 — 构造期全流水线(2~3 周)**
-- 依次实现 Stage 1→5;构造期验证产出**带类型**失败信号并按 §6 路由;每 agent ≤3 pass。
+**Milestone 2 — 构造期全流水线 + 工具注册表(2~3 周)**
+- 依次实现 Stage 1→5;构造期验证产出 `GateResult` 并按 §6 路由;每 agent ≤3 pass。
+- 落地**工具注册表**(§3.6):`registry.validate(plan)` 在 Stage 2 后拦截未注册工具;Stage 4 工具定义只从注册表出。
 - 验收:给一段全新的编码任务描述(不在示例里),自动产出可执行 swarm 并通过构造期验证。
 
-**Milestone 3 — 评测、调优、加固(2~4 周)**
-- 接论文的 6 个 benchmark 跑分;做消融;加成本/时间预算与兜底;加沙箱加固与并发。
-- 验收:在 HumanEval/MBPP 上达到与论文同量级表现(见 §9)。
+**Milestone 3 — MAV/DeepVerifier 增强 + 评测、加固(2~4 周)**
+- **增强(baseline 打平后才上)**:§3.7 多 aspect 面板(模型判残差,便宜档)+ source-checkable 分解;§3.4 BoN 候选选优旋钮;rubric 反馈扩到语义断言;轴 B 子类随 trace 增长(§5 future-work)。
+- 接论文 6 个 benchmark 跑分;做消融;加成本/时间预算与兜底(§7 预算模型);加沙箱加固与并发。
+- 验收:HumanEval/MBPP 达到与论文同量级(§9);**消融自检**——关掉 §3.7 面板,验证"验证仍是承重组件"的趋势。
 
 ---
 
@@ -521,9 +617,9 @@ def classify(spec_id, gate, store, swarm):
 | 验证开销大 | **【论文 §3.4】** 每个中间结果都要验 | 断言"机判优先于模型判";只在 necessary 时调 verifier 模型;模型判残差用**便宜档 aspect 面板**(§3.7/§7,weak-to-strong)替单一贵模型;同层并发 |
 | 角色混淆(role confusion) | 论文 math classifier 被打回 3 次 | 规划期强制单一职责 + 充分的 `forbidden_patterns`;构造期行为验证专门查越界 |
 | 工具格式错误 | 论文 math Pass 2 失败 | 统一工具注册表产出格式,模型不自由拼工具定义 |
-| 生成代码不可信 | 自动生成 + 执行 | 强隔离沙箱、禁网、超时、资源上限(§7 红线) |
-| 提示注入 | web_search / 文档 grounding 引入外部文本 | grounding 内容只作"数据"不作"指令";检索结果不进系统提示的指令区 |
-| 无限重试/成本失控 | 闭环回退 | 各级重试上限 + 全局预算;触顶 surface failure 而非给未验证答案 |
+| 生成代码不可信 | 自动生成 + 执行 | 三档隔离沙箱、禁网、超时、资源上限(§7.1) |
+| 提示注入 | web_search / 文档 grounding 引入外部文本 | grounding 内容只作"数据"不作"指令";检索结果不进系统提示的指令区(§7.1) |
+| 无限重试/成本失控 | 闭环回退 | 统一 `Budget`/`BudgetMeter`(§7.2):各级重试上限 + 全局预算;触顶 surface failure 而非给未验证答案 |
 | 弱于专家手工系统 | **【论文 Limitations】** 全自动 vs 专家先验 | 预留"轻量领域先验"注入点(论文 future work 方向):允许人工为特定 domain 追加 spec 模板/断言 |
 
 ---
