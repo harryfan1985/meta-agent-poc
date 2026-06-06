@@ -65,6 +65,19 @@ class VerificationCriteria(BaseModel):
     required_tools: list[str] = []
     forbidden_patterns: list[str]         # 必须不出现的模式(如"不得输出代码")
 
+# ---------- Stage 3 产物:Grounding ----------
+class Recommendation(BaseModel):
+    name: str                             # API / 库 / 文档条目名
+    url: str                              # provenance,来自定向检索
+    auth_method: Optional[str] = None     # e.g. "api_key" / "oauth" / None
+    relevance_score: float = Field(ge=0, le=1)
+
+class GroundingResult(BaseModel):
+    directive: str                        # 该 spec 派生出的检索 directive(查询)
+    research_summary: str                 # 供 codegen 注入系统提示的知识摘要
+    recommendations: list[Recommendation] = []
+    retrieved_at: Optional[str] = None    # ISO 时间戳,便于缓存/失效判断
+
 class AgentSpec(BaseModel):
     spec_id: str
     role: str
@@ -72,8 +85,8 @@ class AgentSpec(BaseModel):
     dependencies: list[str] = []          # 指向其它 spec_id
     io_contract: IOContract
     verification_criteria: VerificationCriteria
-    # 【工程补全】grounding 阶段回填:
-    grounding: Optional[dict] = None      # {research_summary, recommendations[]}
+    # 【工程补全】grounding 阶段回填(纯推理 agent 保持 None):
+    grounding: Optional[GroundingResult] = None
 
 # ---------- Stage 2: SwarmPlan ----------
 class DagEdge(BaseModel):
@@ -87,12 +100,47 @@ class SwarmPlan(BaseModel):
     specs: list[AgentSpec]
     dag_edges: list[DagEdge]
 
+# ---------- 工具注册表(详见 §3.6)----------
+# 【工程补全】spec.tools 里只出现"抽象工具名";后端真实的工具定义由注册表
+# 唯一产出,模型/codegen 不得自由拼装格式(论文 math Pass 2 就栽在工具格式)。
+class ToolDefinition(BaseModel):
+    name: str                             # 抽象名,e.g. "web_search"
+    backend_schema: dict                  # 后端真实工具定义(Anthropic tool schema)
+    handler_ref: str                      # 执行期实际调用的 handler 标识
+    requires_network: bool = False        # 沙箱据此决定是否放行出网
+    side_effects: Literal["none", "read", "write"] = "none"
+
 # ---------- 构造产物 ----------
 class AgentArtifact(BaseModel):
     spec_id: str
     module_path: str                      # 生成的 .py 文件
     entrypoint: str = "run"               # run(message, history) -> dict
     passed: bool = False
+
+# ---------- 构造期最终产物:ExecutableSwarm ----------
+# 【工程补全】§4 执行期全程消费此对象。它把"规划真相(plan)"、"可执行体
+# (loaded callables)"和"构造期凭证(artifacts)"绑定在一起,并提供 §4 用到的
+# 三个访问器。spec/artifact 在 plan 内已校验过 DAG 无环,这里只做索引。
+class ExecutableSwarm(BaseModel):
+    plan: SwarmPlan                       # specs + dag_edges(已通过环检测)
+    artifacts: dict[str, AgentArtifact]   # spec_id -> 构造凭证(passed=True)
+
+    class Config:
+        arbitrary_types_allowed = True    # _loaded 持有运行时 callable
+
+    # spec_id -> 已加载的 run(message, history) callable;
+    # 由 loader 在执行前 importlib 加载 artifact.module_path 填充,不进序列化。
+    _loaded: dict = {}
+
+    def spec(self, spec_id: str) -> AgentSpec:
+        return next(s for s in self.plan.specs if s.spec_id == spec_id)
+
+    def agent(self, spec_id: str):
+        return self._loaded[spec_id]      # -> callable(message, history) -> dict
+
+    @property
+    def dag(self) -> list[DagEdge]:
+        return self.plan.dag_edges
 
 # ---------- 失败信号(带类型) ----------
 class FailureType(str, Enum):
@@ -188,6 +236,27 @@ def run(message: dict, history: list) -> dict:
 - 静态检查:`importlib` 试加载 + `inspect` 校验 `run` 签名 + AST 扫 `forbidden_patterns`(如禁止第三方 import 时,扫 import 节点)。
 - 行为检查:为每个 `behavioral_assertion` 构造小输入,跑 agent,用 verifier 模型判定断言是否成立;断言里能机判的(签名逐字符匹配、禁用 import)直接用代码判,省 token。**【工程补全】** 断言尽量"代码可判 > 模型判",降低成本与误判。
 
+### 3.6 — 工具注册表(Tool Registry,横切 Stage 3/4/执行期)
+
+**【工程补全】** 论文反复点名"工具格式错误"是 Stage 4 的典型失败源(math Pass 2:`web_search` 用了 server-side 格式、需要特定 SDK 处理)。根因是**让模型自由拼工具定义**。本方案用一个**单一出口**的注册表消除这个自由度:`spec.tools` 全程只携带抽象名,真实定义只能从注册表取。
+
+职责与接口:
+```python
+class ToolRegistry:
+    def get(self, name: str) -> ToolDefinition: ...      # 抽象名 → 后端定义,缺失即 raise
+    def schema_for(self, names: list[str]) -> list[dict] # codegen/executor 注入用的 backend_schema 列表
+    def handler(self, name: str):                        # 执行期按 handler_ref 取真实可调用
+    def validate(self, plan: SwarmPlan) -> list[str]     # 规划后即校验:所有 spec.tools 均已注册
+```
+
+三处接入点:
+- **Stage 2 后**:`registry.validate(plan)` —— 任何 spec 引用了未注册工具,直接判 `contract` 失败回退重规划,**不让坏工具名流到 codegen**。
+- **Stage 3(grounding)**:directive 派生时可参考 `ToolDefinition` 的 `requires_network/auth_method`,避免给纯本地工具发无谓检索。
+- **Stage 4(codegen)**:模块里的 `TOOLS = registry.schema_for(spec.tools)`,**模型不接触工具格式**,只写"调用哪个工具名"的逻辑。
+- **执行期**:工具调用经 `registry.handler(name)` 落地;沙箱依据 `requires_network` 决定是否放行出网、依据 `side_effects` 决定文件系统写权限(对齐 §7 安全红线)。
+
+新增/变更工具只动注册表一处,生成代码与 spec 都无需改 —— 这也是"跨模型可迁移"(§9)的工程前提之一。
+
 ---
 
 ## 4. 执行期(Phase 2)详细设计
@@ -198,7 +267,12 @@ def execute(swarm: ExecutableSwarm, task_input: dict) -> dict:
     ready = topo_ready_nodes(swarm.dag)            # 入度为 0
     while not all_done(swarm):
         for spec_id in ready:
-            inputs = store.gather_inputs(spec_id, swarm)   # 按 io_contract 组装
+            try:
+                inputs = store.gather_inputs(spec_id, swarm)   # 按 io_contract 组装
+            except ContractMismatch as e:                      # 缺字段/歧义 = 分解缺陷
+                RecoveryRouter.apply(Recovery(kind="structural",
+                    subgraph=affected_subgraph(spec_id, swarm)), spec_id, swarm, store)
+                break
             y = swarm.agent(spec_id).run(inputs, store.history(spec_id))
 
             gate = RuntimeGate.check(y, swarm.spec(spec_id).verification_criteria)
@@ -218,7 +292,35 @@ def execute(swarm: ExecutableSwarm, task_input: dict) -> dict:
 
 ### 4.2 ContextStore
 
-**【论文】** in-memory context store 路由中间产物。**【工程补全】** 接口:`put(spec_id, output)` / `gather_inputs(spec_id, swarm)`(根据下游 `input_schema` 从各上游 `output_schema` 取字段拼装)/ `history(spec_id)`。生产环境可换持久化后端以支持回放与调试(类似论文相关工作 AgentGit 的 branching/rollback 思路)。
+**【论文】** in-memory context store 路由中间产物。**【工程补全】** 接口:`put(spec_id, output)` / `gather_inputs(spec_id, swarm)` / `history(spec_id)`。生产环境可换持久化后端以支持回放与调试(类似论文相关工作 AgentGit 的 branching/rollback 思路)。
+
+**`gather_inputs` 字段映射算法**:目标是为下游 `spec_id` 组装一个满足其 `io_contract.input_schema` 的 `message`。映射的合法来源**仅限其直接依赖**(`spec.dependencies`)的已存输出,这与 §3.2"契约可追溯性"(下游每个输入字段都应能在某个上游输出找到来源)是同一约束的执行期落地。
+
+```python
+def gather_inputs(self, spec_id, swarm):
+    spec = swarm.spec(spec_id)
+    deps = spec.dependencies
+    message, unresolved, conflicts = {}, [], {}
+    for field in spec.io_contract.input_schema:           # 按字段名匹配
+        sources = [d for d in deps
+                   if self.has(d) and field in swarm.spec(d).io_contract.output_schema]
+        if not sources:
+            unresolved.append(field)                      # 没有上游能提供 → 缺字段
+        elif len(sources) > 1:
+            conflicts[field] = sources                    # 多个上游都产出同名字段 → 歧义
+        else:
+            message[field] = self.get(sources[0])[field]
+    if unresolved or conflicts:
+        # 不静默丢字段:抛结构性信号,交 ErrorAttributor 判 structural(契约/分解缺陷)
+        raise ContractMismatch(spec_id, unresolved=unresolved, conflicts=conflicts)
+    return message
+```
+
+设计决策(均为 **【工程补全】**):
+- **按字段名匹配**:依赖 Stage 2 规划时就让上下游 schema 字段名对齐(契约可追溯性);名字不齐属于规划缺陷,应在构造期就被 `contract` 验证拦下,而非执行期硬猜。
+- **缺字段 / 歧义 → 不静默处理**:任一字段无来源或有多个来源,直接抛 `ContractMismatch`。它在 §5 归因里映射为 `missing_required_field(...)→ structural`(分解本身有缺陷),而不是让 agent 拿着残缺/猜测的输入去跑。
+- **作用域限直接依赖**:不做跨层"全局变量池"式取值,避免隐式耦合绕过 DAG;需要某上游字段就必须在 `dependencies` 里显式声明,保持 DAG 是唯一的数据流真相。
+- **可追溯**:`message` 每个字段都记录来源 `spec_id`,写入 trace,供 §5 upstream 归因快速定位责任上游。
 
 ### 4.3 RuntimeGate(执行期验证)
 
