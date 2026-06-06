@@ -16,7 +16,7 @@
 
 ## 当前状态
 
-**设计阶段,尚无代码。** 仓库目前只有 `README.md`、`AGENTS.md` 和设计文档。第一段要写的代码是 §8 的 **Milestone 0**:Pydantic schema + `Coordinator` + `ContextStore` + 拓扑执行 + DAG 环检测,然后手写复刻论文 function-completion 4-agent swarm 跑通执行期。
+**设计阶段,尚无代码。** 仓库目前只有 `README.md`、`AGENTS.md`、主设计文档和 `docs/analysis/` 调研文档。第一段要写的代码是 §8 的 **Milestone 0**:Pydantic schema + `ArtifactLoader` + `Coordinator` + `ContextStore` + 拓扑执行 + DAG 环检测,然后用手写 `SwarmPlan` 配置 + `fixture` artifacts 复刻论文 function-completion 4-agent swarm 跑通执行期。
 
 ## 架构速查
 

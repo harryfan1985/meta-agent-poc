@@ -19,6 +19,7 @@
 **设计阶段** —— 目前仓库只有完整的实现方案,尚无代码。
 
 - 📄 **[docs/meta_agent_spec_driven_plan.md](docs/meta_agent_spec_driven_plan.md)** —— 唯一的设计真相源(数据模型、构造期/执行期设计、错误归因、技术选型、落地路线、评测协议)。
+- 📄 **[docs/analysis/](docs/analysis/README.md)** —— 相关论文与开源验证工具调研(MAV、DeepVerifier、VERIMAP、Agent-as-Judge、Guardrails 等),作为设计参考而非真相源。
 - 📄 **[AGENTS.md](AGENTS.md)** —— 给在本仓库工作的 AI agent / 协作者的项目指引。
 
 ## 系统组成
@@ -38,7 +39,7 @@
 
 | 里程碑 | 内容 |
 |---|---|
-| **M0** | Pydantic schema + `Coordinator` + `ContextStore` + 拓扑执行 + DAG 环检测;手写复刻论文 4-agent swarm 跑通执行期 |
+| **M0** | Pydantic schema + `ArtifactLoader` + `Coordinator` + `ContextStore` + 拓扑执行 + DAG 环检测;用手写 `SwarmPlan` 配置 + fixture artifacts 跑通论文 4-agent swarm |
 | **M1** | `RuntimeGate` + `ErrorAttributor` + `RecoveryRouter`;四类错误归因单测 |
 | **M2** | 构造期 Stage 1→5 全流水线;带类型失败信号 + 类型化路由 |
 | **M3** | 6 个 benchmark 跑分 + 消融 + 成本预算 + 沙箱加固 |

@@ -22,7 +22,7 @@
 
 ## 核心设计文档
 
-- [../meta_agent_spec_driven_plan.md](../meta_agent_spec_driven_plan.md) — Meta-Agent PoC 完整设计（634行）
+- [../meta_agent_spec_driven_plan.md](../meta_agent_spec_driven_plan.md) — Meta-Agent PoC 完整设计（唯一真相源）
 - [../../README.md](../../README.md) — 项目总览
 - [../../AGENTS.md](../../AGENTS.md) — AI agent / 协作者指引
 
