@@ -1,6 +1,7 @@
 # Meta-Agent 落地方案:Spec 驱动的 Agent 编码系统
 
-> 依据论文:*Meta-Agent: From Task Descriptions to Verified Multi-Agent Systems*(Andy Xu, Yu-Wing Tai,Dartmouth,arXiv:2605.25233,NeurIPS 2026)
+> 依据论文:*Meta-Agent: From Task Descriptions to Verified Multi-Agent Systems*(Andy Xu, Yu-Wing Tai,Dartmouth,arXiv:2605.25233,2026)
+>
 >
 > 标注约定:**【论文】** = 论文明确描述的机制;**【工程补全】** = 论文未指定、本方案为可落地补充的具体决策,可替换。
 
@@ -171,12 +172,16 @@ class FailureSubtype(str, Enum):
     SCHEMA_VIOLATION = "schema_violation"   # 输出不满足 output_schema
     FORBIDDEN_HIT    = "forbidden_hit"      # 命中 forbidden_patterns
     TOOL_MISUSE      = "tool_misuse"        # 工具调用方式/格式错误
+    TIMEOUT          = "timeout"            # 沙箱超时(执行期)
+    OUTPUT_TOO_LARGE = "output_too_large"   # 输出超限
     # grounding 下
     MISSING_KNOWLEDGE = "missing_knowledge" # 缺必要外部知识
     STALE_SOURCE      = "stale_source"      # provenance 过期/不可达
+    IRRELEVANT_RESULT = "irrelevant_result" # 检索返回不相关内容
     # contract 下
     FIELD_MISMATCH    = "field_mismatch"    # 上下游字段对不上(契约可追溯性破坏)
     DECOMP_FLAW       = "decomp_flaw"       # 分解本身有缺陷
+    CYCLE_DETECTED    = "cycle_detected"    # DAG 环检测失败(构造期)
 
 # rubric 派生的结构化修正(不是标量分;借鉴 DeepVerifier 的 rubric-guided feedback)
 class StructuredFeedback(BaseModel):
@@ -215,6 +220,20 @@ class FailureSignal(BaseModel):
 
 总入口:`construct(task_description: str) -> ExecutableSwarm`。五个 Stage 串行,任一 Stage 的产物都要过验证才进入下一步。
 
+**构造流水线(含新增 Schema 对齐检查)**:
+
+```
+Stage 1 (IntentParser) → Stage 2 (SwarmPlanner)
+  → registry.validate(plan)          # 工具名校验
+  → check_schema_alignment(plan)     # 【工程补全】schema 字段名对齐校验
+  → Stage 3 (GroundingResearcher)
+  → Stage 4 (AgentCodeGen)
+  → Stage 5 (ConstructionVerifier)   # 每 agent ≤3 pass,含 representative inputs 生成
+  → ExecutableSwarm
+```
+
+**【工程补全】Stage 4 codegen 可行性警告**:自动生成正确运行的 Python 模块是整个流水线中**最困难的步骤**。论文附录的 4-agent swarm 是手工构造的 trace,未展示自动 codegen 的成功率。如果首次成功率显著低于 50%,降级方案为:用 YAML/JSON 配置替代生成代码——`AgentSpec` + 手写 `run()` 模板 + 参数化 system prompt——保留构造期验证与执行期调度,但 codegen 退化为模板填充。
+
 ### 3.1 Stage 1 — IntentParser
 
 **【论文】** 把 T 解析成 `ParsedIntent`;同时用 `web_search` 拉回**跨任务类型的代表性示例**(论文里 function-completion 拉了 7 类、math 拉了 7 类、DROP 拉了 8 类),目的是让后续规划"见过任务空间的形状"。
@@ -244,6 +263,28 @@ Constraints must be atomic and checkable.
 设计准则(论文 §3.4):
 - **少而清晰的分解**:典型 4 节点,最后一个通常是 verifier/formatter 角色。
 - **契约可追溯**:下游输入 schema 的每个字段都应能在某个上游输出 schema 找到来源。
+
+**【工程补全】Schema 对齐检查(Stage 2 后,构造期验证前)**:
+`gather_inputs`(§4.2)按**字段名精确匹配**,要求 SwarmPlanner 生成的上下游 schema 字段名一致。LLM 天然倾向用近义词,因此必须在规划后立即做强制校验:
+
+```python
+def check_schema_alignment(plan: SwarmPlan) -> list[str]:
+    issues = []
+    for edge in plan.dag_edges:
+        upstream = plan.specs[edge.from_spec]
+        downstream = plan.specs[edge.to_spec]
+        for field in downstream.io_contract.required_in:
+            if field not in upstream.io_contract.output_schema:
+                # 检查是否有其它依赖产出该字段
+                all_deps = [d for d in downstream.dependencies
+                           if field in plan.specs[d].io_contract.output_schema]
+                if not all_deps:
+                    issues.append(f"{edge.from_spec}→{edge.to_spec}: "
+                                  f"required field '{field}' not in any upstream output")
+    return issues  # 非空 → contract 失败,退回 Stage 2 重规划
+```
+
+此检查在 `registry.validate(plan)` 之后、`ConstructionVerifier` 之前执行。不通过则判 `contract` 失败,带具体字段名反馈退回 Stage 2 重规划。
 
 ### 3.3 Stage 3 — GroundingResearcher(设计期 grounding)
 
@@ -289,6 +330,7 @@ def run(message: dict, history: list) -> dict:
 实现要点:
 - 静态检查:`importlib` 试加载 + `inspect` 校验 `run` 签名 + AST 扫 `forbidden_patterns`(如禁止第三方 import 时,扫 import 节点)。
 - 行为检查:为每个 `behavioral_assertion` 构造小输入,跑 agent,断言里能机判的(签名逐字符匹配、禁用 import)直接用代码判,省 token;**机判覆盖不到的语义断言走 §3.7 的多 aspect 验证器面板**(赞成聚合,结果仍映射成带类型失败信号)。**【工程补全】** 断言尽量"代码可判 > 模型判",降低成本与误判。
+- **【工程补全】代表性输入生成**:行为验证需要"代表性输入"来模拟执行 âᵢ。输入从 `behavioral_assertions` 自动派生:每条 assertion 至少生成 1 个最小可行的输入用例(如"检查签名匹配"→ 传入符合 `input_schema` 的标准调用;"检查 forbidden_patterns"→ 传入故意触发禁止模式的输入)。这些用例由 `ConstructionVerifier` 自动构造(用 LLM 根据 assertion + `io_contract.input_schema` 生成),而非手工编写。用例覆盖度 = `behavioral_assertions` 的覆盖率——这是 Stage 2 写出可判定断言的另一个动机。
 
 ### 3.6 工具注册表(Tool Registry,横切 Stage 3/4/执行期)
 
@@ -565,9 +607,10 @@ class TraceEvent(BaseModel):
 
 > **排期原则**:先打平论文 baseline(M0–M2,只用论文机制 + 必要的可机判收口),**再叠加 MAV/DeepVerifier 增强(M3)**。aspect 面板(§3.7)、BoN 旋钮(§3.4)、轴 B 的 rubric 反馈属于"锦上添花",**不进 PoC 前期**,避免一上来背全套。
 
-**Milestone 0 — 骨架与 schema(1~2 周)**
-- 落地 §2 全部 Pydantic 模型(含**可机判的 `IOContract`/`FieldSpec`/`out_jsonschema`**、统一 `GateResult`);搭 `Coordinator` + `ContextStore`(含 `gather_inputs` §4.2)+ 拓扑执行 + DAG 环检测。
-- 手写一个 4-agent swarm(直接复刻论文附录 A 的 function-completion 四节点)跑通执行期,先不接构造期。验收:`has_close_elements` 例子端到端 PASS。
+- **Milestone 0 — 骨架与 schema(1~2 周)**  
+  - 落地 §2 全部 Pydantic 模型(含**可机判的 `IOContract`/`FieldSpec`/`out_jsonschema`**、统一 `GateResult`);搭 `Coordinator` + `ContextStore`(含 `gather_inputs` §4.2)+ 拓扑执行 + DAG 环检测。  
+  - **明确"手写 swarm"的含义**:手工构造 `SwarmPlan` 的 JSON/YAML 配置(含 4 个 `AgentSpec` + DAG 边 + I/O 契约 + 验证标准),然后让 `Coordinator` + `ContextStore` 加载并执行,而非手写 agent Python 代码。验收:`has_close_elements` 例子端到端 PASS。  
+  - **快速原型:codegen 可行性验证** —— 手写 10 个 `AgentSpec`(覆盖 code/math/reasoning),测试自动 codegen 的首次成功率。如果 <50%,考虑降级方案(YAML 配置替代 Python 代码生成)。
 
 **Milestone 1 — 执行期验证 + 三级归因 + 结构化反馈(1~2 周)**
 - 实现 `RuntimeGate`(schema/forbidden/assertion 三检,**全部机判**)+ `ErrorAttributor` + `RecoveryRouter`。

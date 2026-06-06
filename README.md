@@ -52,4 +52,4 @@
 - **Pydantic** —— 所有 Stage 产物按 schema 强校验
 - **沙箱执行** —— 生成代码默认不可信,强隔离 + 禁网 + 超时 + 资源上限
 
-> 论文出处:Andy Xu, Yu-Wing Tai (Dartmouth), arXiv:2605.25233, NeurIPS 2026。
+> 论文出处:Andy Xu, Yu-Wing Tai (Dartmouth), arXiv:2605.25233, 2026。
