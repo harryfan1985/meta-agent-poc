@@ -51,9 +51,13 @@
 - **【论文】** = 论文明确描述的机制,改动需谨慎。
 - **【工程补全】** = 论文未指定、为可落地补充的具体决策,**可替换** —— 有更好方案时可直接改,但要在文档里说明。
 
+## 🚫 非目标(硬边界)
+
+**本项目不触碰模型训练 / 微调 / SFT。** 范围严格限定在 **spec-driven、训练自由**:验证与改进只用现成模型(off-the-shelf)+ 机判 + rubric/分类法等**规则层**机制。借鉴外部工作时(如 DeepVerifier 的 SFT 数据集)只采纳其 spec/规则层思路,**剔除一切训练/微调部分**。
+
 ## 技术栈
 
-Python 3.11+ · Pydantic(schema 强校验)· Anthropic API 默认后端(可插拔,各组件可分别配模型)· 沙箱执行。详见 [设计文档 §7](docs/meta_agent_spec_driven_plan.md)。
+Python 3.11+ · Pydantic(schema 强校验)· Anthropic API 默认后端(可插拔,各组件可分别配模型,**均为现成模型、不训练**)· 沙箱执行。详见 [设计文档 §7](docs/meta_agent_spec_driven_plan.md)。
 
 ## 验收基线
 

@@ -142,20 +142,46 @@ class ExecutableSwarm(BaseModel):
     def dag(self) -> list[DagEdge]:
         return self.plan.dag_edges
 
-# ---------- 失败信号(带类型) ----------
+# ---------- 失败信号(两条正交轴,见 §5)----------
+# 轴 A「locality / 在哪修」→ 驱动恢复路由(§5/§6)
 class FailureType(str, Enum):
     SPEC_ADHERENCE = "spec_adherence"     # → 重新生成代码(带反馈)
     GROUNDING      = "grounding"          # → 重跑 API research
     CONTRACT       = "contract"           # → 重新规划架构
 
+# 轴 B「content / 错的是什么」→ 驱动 rubric 结构化反馈(借鉴 DeepVerifier)
+# 【工程补全】每个顶层类型下挂细粒度子类,子类绑定一个 rubric 反馈模板;
+# 子类只让"反馈更准",不改变路由(路由仍只看 failure_type)。
+class FailureSubtype(str, Enum):
+    # spec_adherence 下
+    ROLE_CONFUSION   = "role_confusion"     # 越界/混入其它职责(论文 math classifier)
+    SCHEMA_VIOLATION = "schema_violation"   # 输出不满足 output_schema
+    FORBIDDEN_HIT    = "forbidden_hit"      # 命中 forbidden_patterns
+    TOOL_MISUSE      = "tool_misuse"        # 工具调用方式/格式错误
+    # grounding 下
+    MISSING_KNOWLEDGE = "missing_knowledge" # 缺必要外部知识
+    STALE_SOURCE      = "stale_source"      # provenance 过期/不可达
+    # contract 下
+    FIELD_MISMATCH    = "field_mismatch"    # 上下游字段对不上(契约可追溯性破坏)
+    DECOMP_FLAW       = "decomp_flaw"       # 分解本身有缺陷
+
+# rubric 派生的结构化修正(不是标量分;借鉴 DeepVerifier 的 rubric-guided feedback)
+class StructuredFeedback(BaseModel):
+    subtype: FailureSubtype
+    evidence: str                         # 可溯源:指向违反的 spec 子句/字段/断言
+    expected: str                         # spec 要求的样子
+    actionable_fix: str                   # 下一轮 refine 的具体改法(非"judge 分")
+
 class FailureSignal(BaseModel):
     spec_id: str
-    failure_type: FailureType
-    issues: list[str]
+    failure_type: FailureType             # 轴 A:决定回退阶段(§6)
+    feedback: list[StructuredFeedback] = []  # 轴 B:决定怎么改(喂给 refine)
     pass_index: int = 1
 ```
 
 > **【论文】** 关键点:验证不是返回布尔值,而是返回**带类型的失败信号**,类型直接决定回退到哪一阶段(见 §6 路由表)。这是"最小代价恢复"的实现基础。
+>
+> **【工程补全,借鉴 DeepVerifier / arXiv:2601.15808】** 失败信号有**两条正交轴**:`failure_type`(在哪修,管路由)与 `feedback[].subtype`(错的是什么,管 rubric 结构化反馈)。前者沿用论文,后者把原先的自由文本 `issues` 升级为**可溯源、含 expected/fix 的结构化修正**,提升 refine 命中率(详见 §5)。全部为**规则/spec 层**机制,**不涉及任何模型训练**(§7 非目标)。
 
 ---
 
@@ -291,6 +317,8 @@ ASPECT_TO_FAILURE = {
 
 复用位置:**Stage 5 构造期行为验证**与 **§4.3 RuntimeGate** 的模型判残差都走这套面板。
 
+**source-checkable 分解(借鉴 DeepVerifier / arXiv:2601.15808)**:每个 aspect 的判定都应分解为**可溯源核对的子问题** —— 每个子问题对应一个具体的 spec 子句(`io_contract` 某字段 / 某条 `behavioral_assertion` / `grounding` 某 provenance),verifier 只回答"输出在这一点上是否符合该 spec 子句"。好处:① 利用"验证比生成容易"的不对称性,把模糊的整体判断拆成一串好判的小判断;② 不赞成时天然带出 §2 `StructuredFeedback` 的 `evidence`(指向哪条 spec 子句)。这也给 **Stage 2 派生 `behavioral_assertions`** 一个准则:每条断言都应写成"可溯源到某 spec 子句、可被单点核对"的形式。纯 spec/规则层,**不涉及训练**。
+
 ---
 
 ## 4. 执行期(Phase 2)详细设计
@@ -366,6 +394,12 @@ def gather_inputs(self, spec_id, swarm):
 
 ## 5. 三级错误归因与恢复
 
+> **【工程补全,借鉴 DeepVerifier / arXiv:2601.15808】两条正交轴。** 一次失败要回答两个互不相同的问题:
+> - **轴 A — locality「在哪修」**(本节,论文):local / upstream / structural → 决定**恢复路由**(重试谁/重跑谁/重规划哪块)。
+> - **轴 B — content「错的是什么」**(§2 `FailureSubtype` + `StructuredFeedback`):细粒度子类 + rubric 结构化反馈 → 决定**怎么改**(喂给下一轮 refine 的 `evidence/expected/actionable_fix`)。
+>
+> 二者正交叠加:**轴 A 选恢复动作,轴 B 让该动作的反馈精准**。轴 B 纯属 spec/规则层(rubric 模板由 §2 子类派生),**不涉及模型训练**(§7 非目标)。下面是轴 A。
+
 **【论文】** 给定 agent `aᵢ` 的失败,分三类,恢复成本随局部性递增:
 
 | 错误类型 | 判定 | 恢复策略 | 成本 |
@@ -399,6 +433,8 @@ def classify(spec_id, gate, store, swarm):
 
 **【工程补全】** 重试/重跑/重规划各设上限与全局预算(总 LLM 调用数 / 时间 / 成本),触顶则"surface the failure 而非给未验证答案"——这正是论文 math swarm 的 `coordination_strategy` 写明的兜底原则。
 
+**【工程补全,future-work,借鉴 DeepVerifier 的自动构建分类法】** 轴 B 的 `FailureSubtype` 初版为手工枚举;后续可从 trace(§7 可观测)里记录的失败聚类,**把高频新失败提炼成新子类 + 新 rubric 模板**,让分类法随运行增长。注意:这里的"进化"**纯粹在 spec/rubric 层**(增删枚举与文本模板),**不训练、不微调任何模型**(§7 非目标)。
+
 ---
 
 ## 6. 统一验证循环与失败路由
@@ -429,6 +465,8 @@ def classify(spec_id, gate, store, swarm):
 | 可观测 | 每个 Stage / agent / verification pass 全量 trace | 论文附录给的就是逐 stage JSON trace,直接作为日志格式 |
 
 > 安全红线:生成代码默认**不可信**,必须沙箱执行;web_search/file_generator 之外不开放任意网络与文件系统写权限。
+>
+> **非目标(硬边界):本项目不触碰任何模型训练 / 微调 / SFT。** 范围严格限定 **spec-driven、训练自由**:所有组件(planner/codegen/verifier/executor)只用**现成模型** + 机判 + rubric/分类法等规则层机制。借鉴外部工作时(如 DeepVerifier 的 DeepVerifier-4K SFT 数据集)**只取其 spec/规则层思路,剔除一切训练/微调部分**。验证器变强靠"多 aspect 面板 + rubric 结构化反馈"(§3.7/§2),不靠训练。
 
 ---
 
@@ -497,3 +535,4 @@ def classify(spec_id, gate, store, swarm):
 - **VeriMAP(2510.17109)**:把验证函数嵌入已实例化的规划图 → Meta-Agent 额外在**构造期**就验 spec/tool/依赖,并支持类型化重建。
 - **AFlow**:自动 workflow 生成(本论文主基线)→ Meta-Agent 在五项 benchmark 上更优且无需迭代式 workflow 优化。
 - **MAV / BoN-MAV(2502.20379)**:沿"验证器数量"做 test-time 扩展,多 aspect 验证器**赞成投票选最优候选**(selection)→ 本方案**借用**其多验证器/weak-to-strong/BoN 思路加固"模型判残差"(§3.7)与降本(§7),但**不采纳**其纯投票聚合替代我们的**类型化归因**:MAV 给票数、不给错误类型,无法驱动 §5/§6 的最小代价路由。即 MAV 解决"选哪个最好",Meta-Agent 解决"错在哪、回退到哪"。
+- **DeepVerifier(2601.15808)**:针对 deep-research agent,用**失败分类法 + rubric 结构化反馈 + source-checkable 分解**做测试期自我细化(单生成者迭代)→ 本方案**借用**其三项机制补齐失败信号的**内容轴**(§2 `FailureSubtype`/`StructuredFeedback`、§3.7 source-checkable 分解、§5 两条正交轴),与我们已有的 **locality 轴**正交叠加。两点**不采纳**:① 其 **DeepVerifier-4K SFT / 微调 verifier**——本项目训练自由、边界限于 spec(§7 非目标);② 其单生成者自我细化只对应我们的 **local-retry/Stage 5 refine**,不处理跨 DAG 的 upstream/structural 归因。即 DeepVerifier 强化"错的是什么、怎么改",Meta-Agent 仍独有"错在哪、回退到哪"。
