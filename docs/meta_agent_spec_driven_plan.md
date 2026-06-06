@@ -221,7 +221,9 @@ def run(message: dict, history: list) -> dict:
     return parse_structured(resp, schema=OUTPUT_SCHEMA)
 ```
 
-**【工程补全】** 工具映射层:把 spec 里抽象的 `"web_search"`、`"file_generator"` 映射成当前后端真正的工具定义。论文 math 例子的 Pass 2 失败正是"web_search 用了 server-side 格式需要特定 SDK 处理"——所以工具配置必须由统一映射层产出,不能让模型自由发挥格式。
+**【工程补全】** 工具映射层:把 spec 里抽象的 `"web_search"`、`"file_generator"` 映射成当前后端真正的工具定义(经 §3.6 注册表,`TOOLS = registry.schema_for(spec.tools)`)。论文 math 例子的 Pass 2 失败正是"web_search 用了 server-side 格式需要特定 SDK 处理"——所以工具配置必须由统一映射层产出,不能让模型自由发挥格式。
+
+**【工程补全,可选旋钮:BoN 候选选优,借鉴 BoN-MAV / arXiv:2502.20379】** 默认是"生成 1 个 → 构造期验证 → 失败带反馈顺序重试(≤3 pass)",但论文 math classifier 把 3 次 pass 用满,churn 重。可改为**并行 BoN**:一次生成 N 个候选实现 → 全部过 §3.7 多 aspect 构造期验证 → **按赞成数选最优**;只有最优仍不过才进入顺序 refine 循环。这是"**token 换往返次数与首过率**"的权衡旋钮(`N` 可配,默认 1 即退回顺序模式),BoN+多验证器的扩展性优于 self-consistency。
 
 ### Stage 5 — ConstructionVerifier(构造期验证)
 
@@ -234,7 +236,7 @@ def run(message: dict, history: list) -> dict:
 
 实现要点:
 - 静态检查:`importlib` 试加载 + `inspect` 校验 `run` 签名 + AST 扫 `forbidden_patterns`(如禁止第三方 import 时,扫 import 节点)。
-- 行为检查:为每个 `behavioral_assertion` 构造小输入,跑 agent,用 verifier 模型判定断言是否成立;断言里能机判的(签名逐字符匹配、禁用 import)直接用代码判,省 token。**【工程补全】** 断言尽量"代码可判 > 模型判",降低成本与误判。
+- 行为检查:为每个 `behavioral_assertion` 构造小输入,跑 agent,断言里能机判的(签名逐字符匹配、禁用 import)直接用代码判,省 token;**机判覆盖不到的语义断言走 §3.7 的多 aspect 验证器面板**(赞成聚合,结果仍映射成带类型失败信号)。**【工程补全】** 断言尽量"代码可判 > 模型判",降低成本与误判。
 
 ### 3.6 — 工具注册表(Tool Registry,横切 Stage 3/4/执行期)
 
@@ -256,6 +258,38 @@ class ToolRegistry:
 - **执行期**:工具调用经 `registry.handler(name)` 落地;沙箱依据 `requires_network` 决定是否放行出网、依据 `side_effects` 决定文件系统写权限(对齐 §7 安全红线)。
 
 新增/变更工具只动注册表一处,生成代码与 spec 都无需改 —— 这也是"跨模型可迁移"(§9)的工程前提之一。
+
+### 3.7 — 多 Aspect 验证器面板(MAV,**仅用于模型判残差**)
+
+**【工程补全,借鉴 Multi-Agent Verification, arXiv:2502.20379】** 我们坚持"机判优先"(§3.5/§4.3):能用代码判定的断言(签名逐字符匹配、AST 扫 import、schema 校验)一律机判,确定性强、近乎零成本。但总有一部分语义类断言**只能靠模型判**。这部分目前的薄弱点是"**一个 verifier 模型给布尔**"。
+
+MAV 的结论可直接补强这一残差:**多个多样化的 aspect verifier + 赞成投票**,比单一 verifier、甚至比 reward model 扩展性更好;且具备 **weak-to-strong**(用一组弱/便宜模型也能提升强生成器)。
+
+设计:把模型判残差从"一个 verifier"换成"**一个 aspect 面板**",每个 aspect 一个独立 verifier 调用,按赞成数聚合;**但保留我们的类型化包裹** —— 不退化成纯布尔投票。
+
+```python
+ASPECTS = ["correctness", "contract_adherence", "forbidden_pattern", "role_confinement"]
+
+def panel_verify(output, criteria, aspect_models) -> GateResult:
+    votes = {a: aspect_models[a].approve(output, criteria, aspect=a) for a in ASPECTS}
+    if all(votes.values()):
+        return GateResult(ok=True)
+    # 关键:把"哪个 aspect 不赞成"映射回 failure_type,喂给 §5/§6 的类型化路由
+    failed = [a for a, ok in votes.items() if not ok]
+    return GateResult(ok=False, failure_type=ASPECT_TO_FAILURE[failed[0]], issues=failed)
+
+ASPECT_TO_FAILURE = {
+    "correctness": "spec_adherence", "contract_adherence": "contract",
+    "forbidden_pattern": "spec_adherence", "role_confinement": "spec_adherence",
+}
+```
+
+边界(**务必遵守**):
+- **不替代类型化归因**:投票只增强"模型判残差"的可靠性,`failure_type` 仍由不赞成的 aspect 推导,三级归因(§5)与路由(§6)不变。这是我们相对 MetaGPT/AutoGen 的命根子,MAV 是 selection 扩展、不带类型信息,替代不了它。
+- **不吃掉机判**:机判项(§3.5)继续走代码,只有机判覆盖不到的语义断言才进面板。
+- 面板默认用**便宜档**模型(见 §7 验证器档位),用"多个便宜模型投票"替"一个贵模型判",成本与可靠性同时改善。
+
+复用位置:**Stage 5 构造期行为验证**与 **§4.3 RuntimeGate** 的模型判残差都走这套面板。
 
 ---
 
@@ -326,7 +360,7 @@ def gather_inputs(self, spec_id, swarm):
 
 **【论文】** 公式 (2):中间输出 `yᵢ` 在传给下游前,验证 `yᵢ ∈ Cᵢ`,其中 `Cᵢ` 编码 schema 约束、行为断言、forbidden patterns。不通过则**不向下游传播**,并触发恢复。
 
-实现:`schema 校验(机判)→ forbidden_patterns 扫描(机判)→ behavioral_assertions(机判优先,necessary 时模型判)`,任一不过即 `gate.ok=False` 并附 `failure_type` 与 `issues`。
+实现:`schema 校验(机判)→ forbidden_patterns 扫描(机判)→ behavioral_assertions(机判优先,necessary 时走 §3.7 多 aspect 验证器面板)`,任一不过即 `gate.ok=False` 并附 `failure_type` 与 `issues`。面板的赞成聚合结果按 §3.7 映射成 `failure_type`,直接喂给 §5 的 `ErrorAttributor`。
 
 ---
 
@@ -387,6 +421,7 @@ def classify(spec_id, gate, store, swarm):
 |---|---|---|
 | 编排语言 | Python 3.11+ | 【工程补全】生成产物即 Python 模块,语言一致最省事 |
 | LLM 后端 | 可插拔,默认 Anthropic API | **【论文】** 框架 executor-agnostic;论文用 GPT-4o-mini 做主对比、Claude Sonnet 4.6 把均分从 82.7 提到 87.9。各组件(planner/codegen/verifier/executor)可分别配模型 |
+| 验证器档位 | **【工程补全】** 独立于生成器,默认便宜档(Haiku 级)| 借鉴 MAV 的 weak-to-strong:用一组**弱/便宜**模型组面板投票即可提升强生成器(§3.7);生成走强档、验证走便宜档,直接压低"验证开销大"风险(§10)|
 | 结构化输出 | tool/JSON schema 强约束 | 所有 Stage 产物都按 Pydantic schema 校验,解析失败即重生成 |
 | 代码沙箱 | **【工程补全】** gVisor / Firecracker microVM 或容器 + seccomp | 论文执行期把验证过的代码"在 sandboxed subprocess 跑隐藏单测";本方案要求强隔离 + 禁网(除显式 web_search)+ 超时 + 资源上限 |
 | 工具层 | 统一工具注册表 | 把 `web_search` / `file_generator` 等抽象工具映射成后端真实定义,避免 Stage 4 的格式错误 |
@@ -445,7 +480,7 @@ def classify(spec_id, gate, store, swarm):
 
 | 风险 | 来源 | 规避 |
 |---|---|---|
-| 验证开销大 | **【论文 §3.4】** 每个中间结果都要验 | 断言"机判优先于模型判";只在 necessary 时调 verifier 模型;同层并发 |
+| 验证开销大 | **【论文 §3.4】** 每个中间结果都要验 | 断言"机判优先于模型判";只在 necessary 时调 verifier 模型;模型判残差用**便宜档 aspect 面板**(§3.7/§7,weak-to-strong)替单一贵模型;同层并发 |
 | 角色混淆(role confusion) | 论文 math classifier 被打回 3 次 | 规划期强制单一职责 + 充分的 `forbidden_patterns`;构造期行为验证专门查越界 |
 | 工具格式错误 | 论文 math Pass 2 失败 | 统一工具注册表产出格式,模型不自由拼工具定义 |
 | 生成代码不可信 | 自动生成 + 执行 | 强隔离沙箱、禁网、超时、资源上限(§7 红线) |
@@ -461,3 +496,4 @@ def classify(spec_id, gate, store, swarm):
 - **AutoGen**:对话式图 + post-hoc 验证 → Meta-Agent 验证前置到"执行开始之前"。
 - **VeriMAP(2510.17109)**:把验证函数嵌入已实例化的规划图 → Meta-Agent 额外在**构造期**就验 spec/tool/依赖,并支持类型化重建。
 - **AFlow**:自动 workflow 生成(本论文主基线)→ Meta-Agent 在五项 benchmark 上更优且无需迭代式 workflow 优化。
+- **MAV / BoN-MAV(2502.20379)**:沿"验证器数量"做 test-time 扩展,多 aspect 验证器**赞成投票选最优候选**(selection)→ 本方案**借用**其多验证器/weak-to-strong/BoN 思路加固"模型判残差"(§3.7)与降本(§7),但**不采纳**其纯投票聚合替代我们的**类型化归因**:MAV 给票数、不给错误类型,无法驱动 §5/§6 的最小代价路由。即 MAV 解决"选哪个最好",Meta-Agent 解决"错在哪、回退到哪"。
