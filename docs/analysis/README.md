@@ -12,6 +12,7 @@
 | [deepverifier.md](deepverifier.md) | DeepVerifier | 2601.15808 | 失败信号内容轴：rubric + source-checkable |
 | [agent-as-judge-survey.md](agent-as-judge-survey.md) | Agent-as-a-Judge Survey | 2601.05111 | 验证器理论基础：LLM→Agent judge 演进 |
 | [formal-verification-sdd.md](formal-verification-sdd.md) | Constitutional SDD + Formal Verification | 2602.02584 / 2507.13290 | 形式化保障：security-by-construction + FQL |
+| [anthropic-when-ai-builds-itself.md](anthropic-when-ai-builds-itself.md) | When AI builds itself | Anthropic Institute, 2026.06 | 产业实践：递归自我改进的证据链 |
 
 ## 开源项目分析
 
