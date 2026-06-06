@@ -1,0 +1,361 @@
+# Meta-Agent 落地方案:Spec 驱动的 Agent 编码系统
+
+> 依据论文:*Meta-Agent: From Task Descriptions to Verified Multi-Agent Systems*(Andy Xu, Yu-Wing Tai,Dartmouth,arXiv:2605.25233,NeurIPS 2026)
+>
+> 标注约定:**【论文】** = 论文明确描述的机制;**【工程补全】** = 论文未指定、本方案为可落地补充的具体决策,可替换。
+
+---
+
+## 0. 一句话定位
+
+把"为某个任务搭一套多 agent 系统"这件事本身,变成一条**自动化流水线**:输入一段自然语言任务描述 → 编译出一张带 I/O 契约和验证标准的 agent 有向无环图(DAG)→ 为每个节点生成可执行 agent 代码 → 在构造期和执行期都做验证,失败时按"错误类型"做最小代价回退。
+
+**【论文】** 核心论断:reliability 不是靠事后 self-reflection 补救,而是把**显式、结构化的验证**贯穿构造与执行两个阶段;并用"三级错误归因"让恢复成本与错误局部性成正比(局部重试 < 上游重跑 < 重新规划)。消融实验里,去掉验证掉 7.1 分、去掉外部检索 grounding 掉 5.5 分,是最吃重的两个组件。
+
+---
+
+## 1. 论文方法 → 工程组件映射
+
+| 论文概念 | 工程组件 | 职责 |
+|---|---|---|
+| Prompt Analysis(Stage 1) | `IntentParser` | 任务描述 T → 结构化 `ParsedIntent`,web 检索补任务示例 |
+| Architecture / Swarm Planning(Stage 2) | `SwarmPlanner` | 分解为少量子任务,产出 `AgentSpec` 列表 + DAG 边 |
+| API Research / Grounding(Stage 3) | `GroundingResearcher` | 按 spec 逐个做定向检索,把外部知识写进 spec |
+| Code Generation(Stage 4) | `AgentCodeGen` | 每个 spec → 一个带 `run(message, history)` 接口的 Python 模块 |
+| Construction Verification(Stage 5) | `ConstructionVerifier` | 静态 + 行为双检,产出**带类型**的失败信号 |
+| Coordinator / Orchestrator | `Coordinator` | 按 DAG 拓扑序调度,依赖就绪即派发 |
+| In-memory context store | `ContextStore` | 路由各 agent 的中间产物 |
+| Execution Verification | `RuntimeGate` | 每个中间输出消费前校验 `y_i ∈ C_i` |
+| 三级错误归因 | `ErrorAttributor` + `RecoveryRouter` | 分类 local / upstream / structural 并选恢复策略 |
+| Generate→Verify→Attribute→Refine | 贯穿上述模块的统一闭环 | — |
+
+---
+
+## 2. 核心数据模型
+
+**【论文】** 附录 A/B/C 给出了 `ParsedIntent`、`SwarmPlan`、`AgentSpec`(含 `io_contract` 与 `verification_criteria`)的确切字段。下面用 Pydantic 还原为可执行 schema,这是整个系统的"spec 真相源"。
+
+```python
+from pydantic import BaseModel, Field
+from typing import Literal, Optional
+from enum import Enum
+
+# ---------- Stage 1: ParsedIntent ----------
+class TaskExample(BaseModel):
+    task_type: str
+    example: str
+    source_url: Optional[str] = None      # 来自 web_search 的 provenance
+
+class ParsedIntent(BaseModel):
+    goal: str
+    domain: str
+    tone: str
+    entities: list[str]
+    constraints: list[str]
+    task_examples: list[TaskExample]      # 论文:覆盖任务空间的 5~8 类示例
+
+# ---------- Agent Spec(DAG 节点) ----------
+class IOContract(BaseModel):
+    input_schema: dict                    # {field: "type -- desc"} 形式
+    output_schema: dict
+    description: str
+
+class VerificationCriteria(BaseModel):
+    behavioral_assertions: list[str]      # 可执行/可判定的行为断言
+    required_tools: list[str] = []
+    forbidden_patterns: list[str]         # 必须不出现的模式(如"不得输出代码")
+
+class AgentSpec(BaseModel):
+    spec_id: str
+    role: str
+    tools: list[str] = []                 # e.g. ["web_search", "file_generator"]
+    dependencies: list[str] = []          # 指向其它 spec_id
+    io_contract: IOContract
+    verification_criteria: VerificationCriteria
+    # 【工程补全】grounding 阶段回填:
+    grounding: Optional[dict] = None      # {research_summary, recommendations[]}
+
+# ---------- Stage 2: SwarmPlan ----------
+class DagEdge(BaseModel):
+    from_spec: str
+    to_spec: str
+
+class SwarmPlan(BaseModel):
+    swarm_name: str
+    summary: str
+    coordination_strategy: str            # 论文:严格拓扑序的分阶段描述
+    specs: list[AgentSpec]
+    dag_edges: list[DagEdge]
+
+# ---------- 构造产物 ----------
+class AgentArtifact(BaseModel):
+    spec_id: str
+    module_path: str                      # 生成的 .py 文件
+    entrypoint: str = "run"               # run(message, history) -> dict
+    passed: bool = False
+
+# ---------- 失败信号(带类型) ----------
+class FailureType(str, Enum):
+    SPEC_ADHERENCE = "spec_adherence"     # → 重新生成代码(带反馈)
+    GROUNDING      = "grounding"          # → 重跑 API research
+    CONTRACT       = "contract"           # → 重新规划架构
+
+class FailureSignal(BaseModel):
+    spec_id: str
+    failure_type: FailureType
+    issues: list[str]
+    pass_index: int = 1
+```
+
+> **【论文】** 关键点:验证不是返回布尔值,而是返回**带类型的失败信号**,类型直接决定回退到哪一阶段(见 §6 路由表)。这是"最小代价恢复"的实现基础。
+
+---
+
+## 3. 构造期(Phase 1)详细设计
+
+总入口:`construct(task_description: str) -> ExecutableSwarm`。五个 Stage 串行,任一 Stage 的产物都要过验证才进入下一步。
+
+### Stage 1 — IntentParser
+
+**【论文】** 把 T 解析成 `ParsedIntent`;同时用 `web_search` 拉回**跨任务类型的代表性示例**(论文里 function-completion 拉了 7 类、math 拉了 7 类、DROP 拉了 8 类),目的是让后续规划"见过任务空间的形状"。
+
+实现要点:
+- 用一次结构化输出调用(JSON mode / tool schema 强约束)产出 `ParsedIntent` 骨架。
+- 对 `task_examples`:先让模型列出任务的若干子类型,再对每个子类型发一次 `web_search`,取一个带 `source_url` 的真实示例回填。**【工程补全】** 每类 1 次检索、最多 7~8 类,避免检索爆炸。
+
+提示词骨架(planner 系统提示):
+```
+You compile a natural-language task description into a structured intent.
+Output ONLY JSON matching ParsedIntent. Do not solve the task.
+For task_examples: enumerate distinct sub-types of the task, and for each
+attach one concrete example with a real source_url retrieved via web_search.
+Constraints must be atomic and checkable.
+```
+
+### Stage 2 — SwarmPlanner
+
+**【论文】** 把任务分解成**少量**子任务(三个 running example 都是 4 个 agent),组织成 DAG;为每个节点产出完整 `AgentSpec`(role / tools / dependencies / io_contract / verification_criteria)。`coordination_strategy` 用自然语言描述严格拓扑序的分阶段执行。
+
+实现要点:
+- 输出 `SwarmPlan`,**强制** `dag_edges` 构成 DAG(生成后做环检测,有环则退回重生成)。**【工程补全】**
+- **强制每个 spec 的 `verification_criteria` 非空**:`behavioral_assertions` 至少 1 条、`forbidden_patterns` 至少 1 条。论文的 spec 全都带这两项,且断言写得**可判定**(如"签名必须逐字符匹配 raw_signature""第三方 import 即判 FAIL")。这是后续验证能跑的前提。
+- 鼓励"角色不混淆":论文 math 例子里 classifier 被反复打回 3 次,就是因为它的系统提示里混进了"解题"指令(role confusion)。规划时要让每个 agent 职责单一、`forbidden_patterns` 显式排除越界行为。
+
+设计准则(论文 §3.4):
+- **少而清晰的分解**:典型 4 节点,最后一个通常是 verifier/formatter 角色。
+- **契约可追溯**:下游输入 schema 的每个字段都应能在某个上游输出 schema 找到来源。
+
+### Stage 3 — GroundingResearcher(设计期 grounding)
+
+**【论文】** grounding 放在**构造期**而非执行期:对每个"需要外部知识"的 spec 发一条**定向检索 directive**(one search per agent),把结果(`research_summary` + 带 provenance 的 API/文档推荐)写回该 spec 的 `grounding` 字段。论文强调这能"在生成前就让 agent 拿到所需知识",显著降低执行期因信息缺失导致的验证失败。
+
+实现要点:
+- directive 由 spec 自动派生:`role + io_contract.description + tools` → 检索查询。
+- 产出 `recommendations[]`(name / url / auth_method / relevance_score)和 `directive_results[]`(per-spec summary)。
+- **【工程补全】** 对不需要外部知识的纯推理 agent(如论文 math 的 solver,tools=[]),跳过检索。
+
+### Stage 4 — AgentCodeGen
+
+**【论文】** 把每个 spec 编译成一个**带标准接口 `run(message, history)` 的可执行 Python 模块**,内含该 agent 的系统提示和工具配置。注意:本阶段产物是"完整可执行的多 agent 系统",不是高层计划。
+
+模块模板(生成目标):
+```python
+# generated/agents/{spec_id}.py
+SYSTEM_PROMPT = """..."""            # 由 role + io_contract + grounding 合成
+TOOLS = [...]                        # 由 spec.tools 映射成具体工具定义
+
+def run(message: dict, history: list) -> dict:
+    """
+    message: {field: value} 满足 io_contract.input_schema
+    返回: dict 满足 io_contract.output_schema
+    """
+    resp = llm_call(SYSTEM_PROMPT, message, history, tools=TOOLS)
+    return parse_structured(resp, schema=OUTPUT_SCHEMA)
+```
+
+**【工程补全】** 工具映射层:把 spec 里抽象的 `"web_search"`、`"file_generator"` 映射成当前后端真正的工具定义。论文 math 例子的 Pass 2 失败正是"web_search 用了 server-side 格式需要特定 SDK 处理"——所以工具配置必须由统一映射层产出,不能让模型自由发挥格式。
+
+### Stage 5 — ConstructionVerifier(构造期验证)
+
+**【论文】** 对每个生成的 agent `âᵢ` 验证其是否满足 spec `σᵢ`,两类互补检查:
+
+1. **静态验证(static)**:代码结构良好、必需接口齐全、能无运行时错误地实例化。
+2. **行为验证(behavioral)**:由一个 verifier 模型在**代表性输入**上模拟执行 `âᵢ`,检查输出是否满足 I/O 契约和行为断言。
+
+**【论文】** 失败返回**带类型**的信号 `f ∈ {spec_adherence, grounding, contract}`,每个类型路由到对应上游阶段(见 §6)。每个 agent 最多 **3 次验证 pass**(论文 math classifier 用满了 3 次)。
+
+实现要点:
+- 静态检查:`importlib` 试加载 + `inspect` 校验 `run` 签名 + AST 扫 `forbidden_patterns`(如禁止第三方 import 时,扫 import 节点)。
+- 行为检查:为每个 `behavioral_assertion` 构造小输入,跑 agent,用 verifier 模型判定断言是否成立;断言里能机判的(签名逐字符匹配、禁用 import)直接用代码判,省 token。**【工程补全】** 断言尽量"代码可判 > 模型判",降低成本与误判。
+
+---
+
+## 4. 执行期(Phase 2)详细设计
+
+```python
+def execute(swarm: ExecutableSwarm, task_input: dict) -> dict:
+    store = ContextStore()
+    ready = topo_ready_nodes(swarm.dag)            # 入度为 0
+    while not all_done(swarm):
+        for spec_id in ready:
+            inputs = store.gather_inputs(spec_id, swarm)   # 按 io_contract 组装
+            y = swarm.agent(spec_id).run(inputs, store.history(spec_id))
+
+            gate = RuntimeGate.check(y, swarm.spec(spec_id).verification_criteria)
+            if gate.ok:
+                store.put(spec_id, y)                      # 仅验证通过才向下游传播
+            else:
+                action = ErrorAttributor.classify(spec_id, gate, store, swarm)
+                RecoveryRouter.apply(action, spec_id, swarm, store)   # 见 §5
+                break  # 重新计算 ready 集合
+        ready = recompute_ready(swarm, store)
+    return store.final_output(swarm)
+```
+
+### 4.1 Coordinator
+
+**【论文】** 按 DAG 拓扑序调度,依赖满足即派发,输出存入 context store 并传给下游。**【工程补全】** 同层无依赖节点可并发;并发度做成可配置(默认串行以便调试,论文三个例子都是严格串行分阶段)。
+
+### 4.2 ContextStore
+
+**【论文】** in-memory context store 路由中间产物。**【工程补全】** 接口:`put(spec_id, output)` / `gather_inputs(spec_id, swarm)`(根据下游 `input_schema` 从各上游 `output_schema` 取字段拼装)/ `history(spec_id)`。生产环境可换持久化后端以支持回放与调试(类似论文相关工作 AgentGit 的 branching/rollback 思路)。
+
+### 4.3 RuntimeGate(执行期验证)
+
+**【论文】** 公式 (2):中间输出 `yᵢ` 在传给下游前,验证 `yᵢ ∈ Cᵢ`,其中 `Cᵢ` 编码 schema 约束、行为断言、forbidden patterns。不通过则**不向下游传播**,并触发恢复。
+
+实现:`schema 校验(机判)→ forbidden_patterns 扫描(机判)→ behavioral_assertions(机判优先,necessary 时模型判)`,任一不过即 `gate.ok=False` 并附 `failure_type` 与 `issues`。
+
+---
+
+## 5. 三级错误归因与恢复
+
+**【论文】** 给定 agent `aᵢ` 的失败,分三类,恢复成本随局部性递增:
+
+| 错误类型 | 判定 | 恢复策略 | 成本 |
+|---|---|---|---|
+| **Local** | 输入正确但 `aᵢ` 输出错 | 带 verifier 反馈**重试同一 agent** | 最低 |
+| **Upstream** | 失败源于某个依赖 | 定位责任上游 agent,**重跑该上游**,再重试 `aᵢ` | 中 |
+| **Structural** | 任务分解本身有缺陷(如 I/O 契约错误) | **升级到构造期,重建受影响子图**(重新规划) | 最高 |
+
+**【论文 §3.3 running example 的归因示例】**(function completion):
+- synthesizer 用了 `≤` 而 analyst 从没标注严格不等 → **upstream**,带反馈重跑 analyst。
+- analyst 标了但 synthesizer 忽略 → **local**,synthesizer 本地重试。
+- planner 选了破坏配对顺序的排序算法 → **contract violation**,重新调用 planner。
+- 没有任何现有 agent 能合理解决 → **structural**,coordinator 重新规划相关子图。
+
+判定逻辑(可落地启发式):
+```python
+def classify(spec_id, gate, store, swarm):
+    deps = swarm.spec(spec_id).dependencies
+    # 1) 上游输出是否已违反其自身契约?→ upstream
+    for d in deps:
+        if store.has(d) and not RuntimeGate.recheck(store.get(d), swarm.spec(d)):
+            return Recovery(kind="upstream", target=d)
+    # 2) 失败信号指向契约/分解不匹配(下游需要的字段上游根本没产出)→ structural
+    if gate.failure_type == "contract" or missing_required_field(gate, store):
+        return Recovery(kind="structural", subgraph=affected_subgraph(spec_id, swarm))
+    # 3) 否则本地重试(带反馈),超过上限再升级
+    if local_retries(spec_id) < MAX_LOCAL_RETRIES:    # 【工程补全】默认 2
+        return Recovery(kind="local", target=spec_id, feedback=gate.issues)
+    return Recovery(kind="structural", subgraph=affected_subgraph(spec_id, swarm))
+```
+
+**【工程补全】** 重试/重跑/重规划各设上限与全局预算(总 LLM 调用数 / 时间 / 成本),触顶则"surface the failure 而非给未验证答案"——这正是论文 math swarm 的 `coordination_strategy` 写明的兜底原则。
+
+---
+
+## 6. 统一验证循环与失败路由
+
+**【论文】** 闭环:`Generate → Verify → Attribute → Refine`,在构造期与执行期都跑。构造期失败的类型化路由:
+
+| 失败类型 | 触发条件 | 回退到的阶段 |
+|---|---|---|
+| `spec_adherence` | 生成的实现不满足 spec(角色越界、未按 schema 输出) | Stage 4 **重新生成代码**(带结构化反馈) |
+| `grounding` | 缺失/错误的外部知识 | Stage 3 **重跑 API research** |
+| `contract` | I/O 契约本身有问题 | Stage 2 **重新规划架构** |
+
+这套"类型化路由"是论文相对 MetaGPT(local 验证)/ AutoGen(post-hoc)/ self-reflection 的关键差异:**不做全局重算,只重算责任组件**。
+
+---
+
+## 7. 技术选型
+
+| 层 | 选择 | 说明 |
+|---|---|---|
+| 编排语言 | Python 3.11+ | 【工程补全】生成产物即 Python 模块,语言一致最省事 |
+| LLM 后端 | 可插拔,默认 Anthropic API | **【论文】** 框架 executor-agnostic;论文用 GPT-4o-mini 做主对比、Claude Sonnet 4.6 把均分从 82.7 提到 87.9。各组件(planner/codegen/verifier/executor)可分别配模型 |
+| 结构化输出 | tool/JSON schema 强约束 | 所有 Stage 产物都按 Pydantic schema 校验,解析失败即重生成 |
+| 代码沙箱 | **【工程补全】** gVisor / Firecracker microVM 或容器 + seccomp | 论文执行期把验证过的代码"在 sandboxed subprocess 跑隐藏单测";本方案要求强隔离 + 禁网(除显式 web_search)+ 超时 + 资源上限 |
+| 工具层 | 统一工具注册表 | 把 `web_search` / `file_generator` 等抽象工具映射成后端真实定义,避免 Stage 4 的格式错误 |
+| 存储 | MVP 用内存;生产用可回放事件日志 | 支持 trajectory 回放与调试 |
+| 可观测 | 每个 Stage / agent / verification pass 全量 trace | 论文附录给的就是逐 stage JSON trace,直接作为日志格式 |
+
+> 安全红线:生成代码默认**不可信**,必须沙箱执行;web_search/file_generator 之外不开放任意网络与文件系统写权限。
+
+---
+
+## 8. 分阶段落地路线
+
+**Milestone 0 — 骨架与 schema(1~2 周)**
+- 落地 §2 全部 Pydantic 模型;搭 `Coordinator` + `ContextStore` + 拓扑执行 + DAG 环检测。
+- 手写一个 4-agent swarm(直接复刻论文附录 A 的 function-completion 四节点)跑通执行期,先不接构造期。验收:`has_close_elements` 例子端到端 PASS。
+
+**Milestone 1 — 执行期验证 + 三级归因(1~2 周)**
+- 实现 `RuntimeGate`(schema/forbidden/assertion 三检)+ `ErrorAttributor` + `RecoveryRouter`。
+- 用论文 §3.3 的四个归因场景做单测(local / upstream / contract / structural 各一)。验收:注入 4 类错误都能被正确分类并恢复。
+
+**Milestone 2 — 构造期全流水线(2~3 周)**
+- 依次实现 Stage 1→5;构造期验证产出**带类型**失败信号并按 §6 路由;每 agent ≤3 pass。
+- 验收:给一段全新的编码任务描述(不在示例里),自动产出可执行 swarm 并通过构造期验证。
+
+**Milestone 3 — 评测、调优、加固(2~4 周)**
+- 接论文的 6 个 benchmark 跑分;做消融;加成本/时间预算与兜底;加沙箱加固与并发。
+- 验收:在 HumanEval/MBPP 上达到与论文同量级表现(见 §9)。
+
+---
+
+## 9. 评测与验收
+
+**【论文】** 评测协议follow AFlow;6 个 benchmark:
+- 代码:HumanEval(pass@1)、MBPP(pass@1)
+- 数学:GSM8K、MATH(solve rate)
+- 阅读理解:HotpotQA、DROP
+
+**【论文】参考分数(GPT-4o-mini executor)**:Meta-Agent 均分 82.7,六项中五项最优(仅 HotpotQA 略低于 AFlow);MATH 较 AFlow +13.4 是最大增益。换 Claude Sonnet 4.6 后均分升到 87.9 且无单项回退——说明构造出的 workflow **跨模型可迁移、不需重调**,这也应作为本方案的回归验收项。
+
+**【论文】消融(DROP,逐个移除构造期组件)**:
+- 去 verification:−7.1(最重)
+- 去 API research(grounding):−5.5
+- 去 planning:−3.5
+- 去 prompt analysis:−2.4
+
+**验收指标(本方案)**:
+1. 任务成功率(对齐上表)。
+2. 错误恢复率:注入中间错误后仍成功完成的比例。
+3. 工作流稳定性:long-horizon 任务的级联失败率。
+4. 成本:每任务 LLM 调用数 / token / 墙钟时间(论文各 Stage 耗时 100~700s 量级,可作上界参考)。
+5. **消融自检**:本地复现"去验证掉 ~7 分"的趋势,验证"验证是承重组件"而非摆设。
+
+---
+
+## 10. 风险与规避
+
+| 风险 | 来源 | 规避 |
+|---|---|---|
+| 验证开销大 | **【论文 §3.4】** 每个中间结果都要验 | 断言"机判优先于模型判";只在 necessary 时调 verifier 模型;同层并发 |
+| 角色混淆(role confusion) | 论文 math classifier 被打回 3 次 | 规划期强制单一职责 + 充分的 `forbidden_patterns`;构造期行为验证专门查越界 |
+| 工具格式错误 | 论文 math Pass 2 失败 | 统一工具注册表产出格式,模型不自由拼工具定义 |
+| 生成代码不可信 | 自动生成 + 执行 | 强隔离沙箱、禁网、超时、资源上限(§7 红线) |
+| 提示注入 | web_search / 文档 grounding 引入外部文本 | grounding 内容只作"数据"不作"指令";检索结果不进系统提示的指令区 |
+| 无限重试/成本失控 | 闭环回退 | 各级重试上限 + 全局预算;触顶 surface failure 而非给未验证答案 |
+| 弱于专家手工系统 | **【论文 Limitations】** 全自动 vs 专家先验 | 预留"轻量领域先验"注入点(论文 future work 方向):允许人工为特定 domain 追加 spec 模板/断言 |
+
+---
+
+## 附:与相邻工作的边界(便于技术汇报)
+
+- **MetaGPT**:预定义 workflow + 仅 local 验证 → Meta-Agent 是**按任务合成**结构 + 构造期&执行期统一验证。
+- **AutoGen**:对话式图 + post-hoc 验证 → Meta-Agent 验证前置到"执行开始之前"。
+- **VeriMAP(2510.17109)**:把验证函数嵌入已实例化的规划图 → Meta-Agent 额外在**构造期**就验 spec/tool/依赖,并支持类型化重建。
+- **AFlow**:自动 workflow 生成(本论文主基线)→ Meta-Agent 在五项 benchmark 上更优且无需迭代式 workflow 优化。
