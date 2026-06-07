@@ -548,7 +548,7 @@ def run(message: dict, history: list) -> dict:
 
 这解决 M0 的边界问题:**M0 不手写 generated agent Python 模块**,而是手写 `SwarmPlan` 配置 + `fixture` artifacts,用内置 deterministic handler 模拟 4 个 agent 的输出。这样先验证 `Coordinator` / `ContextStore` / DAG / schema 路由,不把风险提前放到 codegen。M2 才把 `fixture` 替换为 `prompt_template` 或 `python_module`。
 
-> **control-plane 说明**:`external_agent` 是 [architecture.md](architecture.md) 的核心形态——本引擎不自己实现节点,而是把受约束的节点任务委派给外部 code agent。无论哪种形态,产物都**必须过 `ConstructionVerifier`/`RuntimeGate`**:code agent 可以提出产物,但不能自己宣布成功(详见 architecture.md "责任分界")。adapter 协议细节不在本文档展开,真相源 schema 只需 `adapter_name` 这个挂载点。
+> **control-plane 说明**:`external_agent` 是 [architecture.md](architecture.md) 的核心形态——本引擎不自己实现节点,而是把受约束的节点任务委派给外部 code agent。无论哪种形态,产物都**必须过 `ConstructionVerifier`/`RuntimeGate`**:code agent 可以提出产物,但不能自己宣布成功(详见 architecture.md "责任分界")。adapter 协议细节不在本文档展开,真相源 schema 只需 `adapter_name` 这个挂载点。`ClaudeCodeAdapter`、`OpenCodeAdapter` 等 adapter 可以共享 worktree/subprocess/diff/trace 等无产品语义的执行基座,但各自的 CLI 参数、权限模型、事件解析、会话语义必须留在 provider-specific adapter 内,不能扩散进核心 schema。
 
 **【工程补全,可选旋钮:BoN 候选选优,借鉴 BoN-MAV / arXiv:2502.20379】** 默认是"生成 1 个 → 构造期验证 → 失败带反馈顺序重试(≤3 pass)",但论文 math classifier 把 3 次 pass 用满,churn 重。可改为**并行 BoN**:一次生成 N 个候选实现 → 全部过 §3.7 多 aspect 构造期验证 → **按赞成数选最优**;只有最优仍不过才进入顺序 refine 循环。这是"**token 换往返次数与首过率**"的权衡旋钮(`N` 可配,默认 1 即退回顺序模式),BoN+多验证器的扩展性优于 self-consistency。
 

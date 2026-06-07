@@ -200,6 +200,82 @@ class AgentRuntimeAdapter:
 
 这样 Claude Code、opencode、Pi agent 都只是 adapter,不会污染核心 spec/runtime。
 
+### ClaudeCodeAdapter 与 OpenCodeAdapter 的共享边界
+
+`ClaudeCodeAdapter` 和 `OpenCodeAdapter` 是同一个 `AgentRuntimeAdapter` 抽象下的 **sibling backend**,不是继承替代关系,也不是谁包装谁。它们都服务于同一个 control-plane contract:
+
+```text
+AgentSpec + message + history
+  → 外部 code agent 执行
+  → output dict / artifact / diff / trace
+  → RuntimeGate / ConstructionVerifier
+```
+
+因此可以共用的是**引擎契约和通用执行基座**,不能共用的是**产品适配层**。
+
+推荐实现三层结构:
+
+```text
+AgentRuntimeAdapter
+  └─ CliCodeAgentAdapterBase
+       ├─ ClaudeCodeAdapter
+       └─ OpenCodeAdapter
+```
+
+`CliCodeAgentAdapterBase` 只放和产品无关的基础设施:
+
+```text
+create_ephemeral_worktree()
+render_contract_reminder()
+run_process_with_timeout()
+capture_diff()
+enforce_output_size_limit()
+emit_trace_event()
+normalize_exit_status()
+validate_against_output_schema()
+cleanup_worktree()
+```
+
+`ClaudeCodeAdapter` 和 `OpenCodeAdapter` 分别实现产品语义:
+
+| 维度 | ClaudeCodeAdapter | OpenCodeAdapter |
+|---|---|---|
+| 调用入口 | Claude Code CLI / SDK / hooks | `opencode run` / `opencode serve` / `opencode acp` |
+| 结构化输出 | 可利用 Claude Code 的 JSON / stream JSON / JSON Schema 能力 | 需要把 OpenCode JSON events reduce 成最终 `output dict` |
+| 会话模型 | Claude Code session / resume / worktree 语义 | OpenCode session / attach / headless server / ACP 语义 |
+| 权限映射 | Claude Code tools、permission mode、hook gate | OpenCode agent config、MCP、permission prompt、server policy |
+| 隔离方式 | 可复用 Claude Code worktree 能力,高风险仍由引擎校验 diff | 引擎创建临时 worktree,通过 `--dir` 或 ACP cwd 传入 |
+| 事件解析 | Claude stream / hook events → `TraceEvent` | OpenCode raw JSON events / session export → `TraceEvent` |
+| 失败映射 | CLI exit、schema violation、hook denial、tool denial | exit、event error、permission denial、agent/config error |
+
+不能把两者强行写成一个 `CodeAgentAdapter(provider="...")`,否则差异会泄漏成大量 provider 分支:
+
+```text
+if provider == "claude": ...
+if provider == "opencode": ...
+```
+
+这会让 adapter 同时承担两套 CLI 参数、两套权限模型、两套事件格式、两套会话语义,最终削弱 control plane 最重要的性质:同一个 `AgentSpec` 可以替换执行后端,但核心 `Coordinator` / `RuntimeGate` / `RecoveryRouter` 完全不变。
+
+更好的边界是:
+
+```text
+共用:
+  AgentRuntimeAdapter contract
+  worktree / subprocess / timeout / diff / trace 基座
+  schema validation 和 RuntimeGate
+
+分开:
+  CLI 参数渲染
+  agent 配置生成
+  tool/permission 映射
+  event stream parser
+  session/resume 语义
+  provider-specific error attribution hints
+```
+
+如果未来某个 code agent 稳定暴露 ACP/A2A server,可以再通过 `ACPAgentAdapter` 或 `A2AAgentAdapter` 收敛 transport 层。但即便 transport 收敛,安装、认证、权限、工具、事件细节仍应保留 provider profile,不能进入核心 schema。
+
 ## 接口协议选型
 
 没有一个业界协议能完整覆盖本项目的内部上下文接口。推荐采用:
