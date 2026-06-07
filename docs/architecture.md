@@ -540,6 +540,8 @@ Code Agent owns:
 11. 所有 trace 留存,用于回放、调试和 verifier calibration
 ```
 
+这套流程的**具体实例**见设计文档[附录 A](meta_agent_spec_driven_plan.md):function-completion 4-agent swarm 已用现行 schema 完整写出。M0 用 `implementation_kind="fixture"` 跑通同一执行期;control-plane 形态只需把节点的 artifact 换成 `implementation_kind="external_agent"`(`adapter_name` 指向 `ClaudeCodeAdapter` 等),**执行期、gate、归因、恢复完全复用,不改一行**——这正是"control plane 不绑定执行后端"的体现。
+
 ## 推荐系统分层
 
 ```text

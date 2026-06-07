@@ -100,3 +100,7 @@ RecoveryRouter
 ## 工程化表述
 
 > 核心是 `AgentSpec + IOContract + VerificationCriteria + DAG + RuntimeGate + RecoveryRouter` 这一套 compiler-runtime,而不是某个具体模型后端或单一 agent workflow。
+
+## 具体实例
+
+以上抽象不是空中楼阁:设计文档[附录 A](meta_agent_spec_driven_plan.md) 把论文 function-completion swarm(`has_close_elements`)用现行 schema **完整实例化**了一次——4 个 `AgentSpec` + DAG + I/O 契约 + 机判断言 + fixture + 端到端 gate 验收。它既验证了 schema 足以表达真实任务,也是 M0 可直接抄的种子。要理解这套引擎"长什么样",从附录 A 入手最快。
