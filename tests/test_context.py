@@ -11,6 +11,19 @@ def _store_with_task():
     return s
 
 
+def test_store_invalidate_and_inputs_and_history():
+    swarm = build_swarm()
+    store = _store_with_task()
+    store.gather_inputs("spec_analyzer", swarm)  # 记录 inputs
+    assert store.inputs("spec_analyzer")["raw_signature"] == TASK_INPUT_EXAMPLE["raw_signature"]
+    store.put("spec_analyzer", {"raw_signature": "s", "parsed_spec": {}})
+    assert store.has("spec_analyzer")
+    store.invalidate("spec_analyzer")  # upstream 重跑前清除
+    assert not store.has("spec_analyzer")
+    assert store.inputs("spec_analyzer") == {}
+    assert store.history("spec_analyzer") == []
+
+
 def test_gi06_entry_node_from_task_input():
     swarm = build_swarm()
     store = _store_with_task()

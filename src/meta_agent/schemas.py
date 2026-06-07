@@ -202,6 +202,20 @@ class RecoveryAction(BaseModel):
     feedback: list[StructuredFeedback] = Field(default_factory=list)
 
 
+# ---------------------------------------------------------------- budget (§7.2)
+
+
+class Budget(BaseModel):
+    max_llm_calls: int = 200
+    max_tokens: int = 2_000_000
+    max_wall_seconds: int = 1800
+    max_local_retries: int = 2  # 单 agent 本地重试上限
+    max_upstream_reruns: int = 2  # 单上游重跑上限
+    max_construct_passes: int = 3  # 构造期验证 pass(M2)
+    max_replans: int = 2  # structural 重规划(M2)
+    bon_n: int = 1  # §3.4 BoN 候选数,1=关闭
+
+
 # ---------------------------------------------------------------- exceptions
 
 

@@ -53,3 +53,23 @@ def sink_nodes(node_ids: list[str], edges: list[DagEdge]) -> list[str]:
     """出度为 0 的节点(最终产物来源)。"""
     has_out = {e.from_spec for e in edges}
     return [n for n in node_ids if n not in has_out]
+
+
+def descendants(node: str, edges: list[DagEdge]) -> set[str]:
+    """node 的所有下游可达节点(不含自身)。用于 structural 受影响子图。"""
+    adj: dict[str, list[str]] = {}
+    for e in edges:
+        adj.setdefault(e.from_spec, []).append(e.to_spec)
+    seen: set[str] = set()
+    stack = list(adj.get(node, []))
+    while stack:
+        n = stack.pop()
+        if n not in seen:
+            seen.add(n)
+            stack.extend(adj.get(n, []))
+    return seen
+
+
+def affected_subgraph(node: str, edges: list[DagEdge]) -> list[str]:
+    """structural 恢复要重建的子图:node + 其全部下游。"""
+    return [node] + sorted(descendants(node, edges))

@@ -25,10 +25,67 @@ def test_e2e03_drop_passthrough_caught_at_source_gate():
     assert "schema_violation" in subtypes or "field_mismatch" in subtypes
 
 
-def test_e2e02_local_drop_inequality_surfaces_gate_failure():
-    """注入 local 错误:analyst 丢 inequality_strict → sa1 gate 失败(M0 无恢复,上浮)。"""
+def test_e2e02_local_persistent_failure_surfaces_after_retries():
+    """持续 local 错误(每次都丢 inequality_strict)→ 本地重试耗尽 → structural 上浮。"""
     swarm = build_swarm(analyzer_handler="fx_spec_analyzer_drop_inequality")
     with pytest.raises(SurfaceFailure) as ei:
         execute(swarm, dict(TASK_INPUT_EXAMPLE))
     assert ei.value.spec_id == "spec_analyzer"
     assert any("sa1" in f.evidence for f in ei.value.gate_result.feedback)
+
+
+def test_e2e05_contract_misalignment_surfaces_structural():
+    """契约错配(下游必填字段不在任何上游输出里)→ gather_inputs ContractMismatch
+    → coordinator 上浮 structural。这是真正的 structural(分解缺陷),区别于
+    'agent 漏吐它本应吐的字段'(那被源头自己 gate 抓)。"""
+    from meta_agent.artifacts import ArtifactLoader
+    from meta_agent.schemas import (
+        AgentArtifact,
+        AgentSpec,
+        DagEdge,
+        ExecutableSwarm,
+        FieldSpec,
+        IOContract,
+        SwarmPlan,
+    )
+
+    f = FieldSpec(type="string", description="x")
+    a = AgentSpec(spec_id="a", io_contract=IOContract(
+        output_schema={"out_a": f}, required_out=["out_a"]))
+    b = AgentSpec(spec_id="b", dependencies=["a"], io_contract=IOContract(
+        input_schema={"need_b": f}, required_in=["need_b"],  # a 不产出 need_b → 错配
+        output_schema={"out_b": f}, required_out=["out_b"]))
+    plan = SwarmPlan(swarm_name="misaligned", specs=[a, b],
+                     dag_edges=[DagEdge(from_spec="a", to_spec="b")])
+    fixtures = {"ha": lambda m, h: {"out_a": "x"}, "hb": lambda m, h: {"out_b": "y"}}
+    swarm = ExecutableSwarm(plan=plan, artifacts={
+        "a": AgentArtifact(spec_id="a", handler_ref="ha", passed=True),
+        "b": AgentArtifact(spec_id="b", handler_ref="hb", passed=True),
+    })
+    ArtifactLoader(fixture_registry=fixtures).bind(swarm)
+    with pytest.raises(SurfaceFailure) as ei:
+        execute(swarm, {})
+    assert ei.value.spec_id == "b"
+    assert "contract mismatch" in str(ei.value).lower()
+
+
+def test_e2e04_local_recovery_succeeds_on_retry():
+    """注入可自愈的 local 错误:首跑丢 inequality_strict(sa1 失败→local 重试),
+    二跑修正 → gate 通过 → 端到端 PASS。验证带反馈的本地重试闭环。"""
+    from meta_agent.fixtures.function_completion import fx_spec_analyzer
+
+    state = {"calls": 0}
+
+    def self_correcting(message, history):
+        state["calls"] += 1
+        out = fx_spec_analyzer(message, history)
+        if state["calls"] == 1:  # 首跑制造 sa1 失败
+            del out["parsed_spec"]["inequality_strict"]
+        return out  # 二跑起正常 → 通过
+
+    swarm = build_swarm()
+    swarm._loaded["spec_analyzer"] = self_correcting  # 覆盖为有状态 handler
+
+    out = execute(swarm, dict(TASK_INPUT_EXAMPLE))
+    assert out["passed"] is True
+    assert state["calls"] == 2  # 恰好一次重试后成功

@@ -14,6 +14,7 @@ class ContextStore:
     def __init__(self) -> None:
         self._data: dict[str, dict] = {}
         self._sources: dict[str, dict[str, str]] = {}  # spec_id -> {field: source_id}
+        self._inputs: dict[str, dict] = {}  # spec_id -> 实际组装的 message(供 upstream recheck)
 
     def put(self, spec_id: str, output: dict) -> None:
         self._data[spec_id] = output
@@ -24,11 +25,20 @@ class ContextStore:
     def get(self, spec_id: str) -> dict:
         return self._data[spec_id]
 
-    def history(self, spec_id: str) -> list:  # M0:无历史
+    def invalidate(self, spec_id: str) -> None:
+        """upstream 重跑前清除其输出,使其重新执行(§5)。"""
+        self._data.pop(spec_id, None)
+        self._sources.pop(spec_id, None)
+        self._inputs.pop(spec_id, None)
+
+    def history(self, spec_id: str) -> list:  # M0/M1:历史由 coordinator 维护
         return []
 
     def sources(self, spec_id: str) -> dict[str, str]:
         return self._sources.get(spec_id, {})
+
+    def inputs(self, spec_id: str) -> dict:
+        return self._inputs.get(spec_id, {})
 
     def _provides(self, source_id: str, field: str, swarm: ExecutableSwarm) -> bool:
         if source_id == TASK_INPUT:
@@ -70,6 +80,7 @@ class ContextStore:
             raise ContractMismatch(spec_id, unresolved=unresolved, conflicts=conflicts)
 
         self._sources[spec_id] = srcmap
+        self._inputs[spec_id] = message  # 供 ErrorAttributor 对上游 recheck
         return message
 
     def final_output(self, swarm: ExecutableSwarm) -> dict:
