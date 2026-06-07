@@ -101,6 +101,26 @@ class VerificationCriteria(BaseModel):
     required_tools: list[str] = Field(default_factory=list)
     forbidden_patterns: list[str]         # 必须不出现的模式(如"不得输出代码")
 
+# ---------- 风险策略与宪法约束 ----------
+# 【工程补全】借鉴 Agent-as-Judge Survey 的成本/可靠性权衡与 CSDD 的
+# "spec 层锁定安全边界":先按风险级别决定验证强度,再让 planner 在任务分解
+# 前消费不可覆写的 policy/constitution rules。
+class VerificationPolicy(BaseModel):
+    risk_tier: Literal["low", "medium", "high", "critical"] = "low"
+    allow_model_verification: bool = False
+    require_human_review: bool = False
+    min_verifier_votes: int = 1
+    max_verifier_cost_tier: Literal["free", "cheap", "expensive"] = "free"
+    conservative_mode: bool = True        # 高风险默认宁可误拒,不放过错误
+
+class ConstitutionRule(BaseModel):
+    rule_id: str
+    scope: Literal["global", "domain", "swarm", "agent", "tool"] = "swarm"
+    severity: Literal["block", "warn", "review"] = "block"
+    description: str
+    machine_assertion: Optional[AssertionSpec] = None
+    applies_to_tools: list[str] = Field(default_factory=list)
+
 # ---------- Stage 3 产物:Grounding ----------
 class Recommendation(BaseModel):
     name: str                             # API / 库 / 文档条目名
@@ -119,6 +139,7 @@ class AgentSpec(BaseModel):
     role: str
     tools: list[str] = Field(default_factory=list)         # e.g. ["web_search", "file_generator"]
     dependencies: list[str] = Field(default_factory=list)  # 指向其它 spec_id
+    risk_tier: Literal["low", "medium", "high", "critical"] = "low"
     io_contract: IOContract
     verification_criteria: VerificationCriteria
     # 【工程补全】grounding 阶段回填(纯推理 agent 保持 None):
@@ -135,6 +156,8 @@ class SwarmPlan(BaseModel):
     coordination_strategy: str            # 论文:严格拓扑序的分阶段描述
     specs: list[AgentSpec]
     dag_edges: list[DagEdge]
+    verification_policy: VerificationPolicy = Field(default_factory=VerificationPolicy)
+    constitution_rules: list[ConstitutionRule] = Field(default_factory=list)
 
 # ---------- 工具注册表(详见 §3.6)----------
 # 【工程补全】spec.tools 里只出现"抽象工具名";后端真实的工具定义由注册表
@@ -212,6 +235,42 @@ class StructuredFeedback(BaseModel):
     expected: str                         # spec 要求的样子
     actionable_fix: str                   # 下一轮 refine 的具体改法(非"judge 分")
 
+# ---------- 可溯源证据 / Claim 验证 ----------
+# 【工程补全,借鉴 DeepVerifier】模型判不要直接 judge 整段输出,而是先抽取
+# claim,再逐 claim 对照 spec/input/upstream/grounding/tool/trace 证据核查。
+class EvidenceRef(BaseModel):
+    source_type: Literal["spec", "input", "upstream_output",
+                         "grounding", "tool_result", "trace"]
+    ref: str                              # JSON Pointer / URL / trace event id / spec clause id
+    quote_or_hash: Optional[str] = None   # 短摘录或内容 hash,便于审计与去重
+
+class Claim(BaseModel):
+    claim_id: str
+    text: str
+    source_path: str                      # 输出中的 JSON Pointer 或文本 span id
+    required_evidence: list[EvidenceRef] = Field(default_factory=list)
+    verification_status: Literal["unchecked", "supported",
+                                 "contradicted", "insufficient"] = "unchecked"
+
+class TestCase(BaseModel):
+    case_id: str
+    spec_id: str
+    input_payload: dict
+    assertions: list[str] = Field(default_factory=list)  # assertion_id 列表
+    expected_partial_output: Optional[dict] = None
+    source: Literal["planner", "verifier_generated",
+                    "regression", "human"] = "planner"
+
+class GoldenVerificationCase(BaseModel):
+    case_id: str
+    spec_id: str
+    message: dict
+    output: dict
+    expected_ok: bool
+    expected_failure_type: Optional[Literal["spec_adherence", "grounding", "contract"]] = None
+    expected_subtypes: list[str] = Field(default_factory=list)
+    evidence_refs: list[EvidenceRef] = Field(default_factory=list)
+
 # 顶层类型优先级:多 aspect/多检查同时失败时,取优先级最高者做路由(见 §3.7)
 FAILURE_PRIORITY = [FailureType.CONTRACT,      # 分解/契约问题最该先处理
                     FailureType.GROUNDING,
@@ -230,6 +289,13 @@ class FailureSignal(BaseModel):
     failure_type: FailureType             # 轴 A:决定回退阶段(§6)
     feedback: list[StructuredFeedback] = Field(default_factory=list)  # 轴 B:决定怎么改(喂给 refine)
     pass_index: int = 1
+
+class SurfaceFailure(BaseModel):
+    reason: str
+    gate_result: GateResult
+    suggested_next_action: Literal["retry", "replan",
+                                   "human_review", "abort"] = "abort"
+    trace_summary_id: Optional[str] = None
 ```
 
 > **【论文】** 关键点:验证不是返回布尔值,而是返回**带类型的失败信号**,类型直接决定回退到哪一阶段(见 §6 路由表)。这是"最小代价恢复"的实现基础。
@@ -245,8 +311,9 @@ class FailureSignal(BaseModel):
 **构造流水线(含新增 Schema 对齐检查)**:
 
 ```
-Stage 1 (IntentParser) → Stage 2 (SwarmPlanner)
+Stage 1 (IntentParser) → load_constitution(domain) → Stage 2 (SwarmPlanner)
   → registry.validate(plan)          # 工具名校验
+  → check_constitution(plan)         # 【工程补全】policy/constitution 校验
   → check_schema_alignment(plan)     # 【工程补全】schema 字段名对齐校验
   → Stage 3 (GroundingResearcher)
   → Stage 4 (AgentCodeGen)
@@ -278,9 +345,11 @@ Constraints must be atomic and checkable.
 **【论文】** 把任务分解成**少量**子任务(三个 running example 都是 4 个 agent),组织成 DAG;为每个节点产出完整 `AgentSpec`(role / tools / dependencies / io_contract / verification_criteria)。`coordination_strategy` 用自然语言描述严格拓扑序的分阶段执行。
 
 实现要点:
+- 输入除 `ParsedIntent` 外,还必须包含 `constitution_rules` 与默认 `verification_policy`。这些规则是不可覆写的元约束,不能被 task description 或 grounding 文本覆盖。**【工程补全,借鉴 CSDD】**
 - 输出 `SwarmPlan`,**强制** `dag_edges` 构成 DAG(生成后做环检测,有环则退回重生成)。**【工程补全】**
 - **强制每个 spec 的 `verification_criteria` 非空**:`behavioral_assertions` 至少 1 条、`forbidden_patterns` 至少 1 条。论文的 spec 全都带这两项,且断言写得**可判定**(如"签名必须逐字符匹配 raw_signature""第三方 import 即判 FAIL")。这是后续验证能跑的前提。
 - **断言双轨制**:`behavioral_assertions` 保留为论文原始的自然语言断言,用于 prompt、trace 与人工审阅;`machine_assertions` 是工程编译后的可执行断言,由 Stage 2 生成后立刻校验。M0/M1 只要求 `machine_assertions` 覆盖 schema/字段/字符串/正则/简单等值等机判类型;`kind="model_check"` 只允许在 M3 进入 aspect verifier 面板。
+- 为每个 `AgentSpec.risk_tier` 赋值:默认继承 `SwarmPlan.verification_policy.risk_tier`;涉及文件写、网络、外部工具、生成代码执行、事实性回答的节点自动至少升到 `medium`;涉及安全/金融/医疗/隐私/基础设施的节点至少升到 `high`。**【工程补全】**
 - 鼓励"角色不混淆":论文 math 例子里 classifier 被反复打回 3 次,就是因为它的系统提示里混进了"解题"指令(role confusion)。规划时要让每个 agent 职责单一、`forbidden_patterns` 显式排除越界行为。
 
 设计准则(论文 §3.4):
@@ -309,6 +378,41 @@ def check_schema_alignment(plan: SwarmPlan) -> list[str]:
 ```
 
 此检查在 `registry.validate(plan)` 之后、`ConstructionVerifier` 之前执行。不通过则判 `contract` 失败,带具体字段名反馈退回 Stage 2 重规划。
+
+**【工程补全】Constitution / Policy 校验(Stage 2 后)**:
+
+```python
+def check_constitution(plan: SwarmPlan) -> list[str]:
+    issues = []
+    for rule in plan.constitution_rules:
+        for spec in plan.specs:
+            if rule.scope == "tool" and not any(t in rule.applies_to_tools for t in spec.tools):
+                continue
+            if rule.machine_assertion and rule.machine_assertion.kind == "model_check":
+                issues.append(f"{rule.rule_id}: constitution rule must be machine-checkable before M3")
+            if rule.severity == "block":
+                # 具体执行交给 RuntimeGate/ConstructionVerifier,这里先确认规则被挂载进 spec。
+                if rule.description not in spec.verification_criteria.forbidden_patterns:
+                    issues.append(f"{spec.spec_id}: missing blocking rule {rule.rule_id}")
+    return issues  # 非空 → contract 失败,退回 Stage 2 重规划
+```
+
+规则来源:
+- `global`:安全红线,如禁任意网络、禁执行 grounding 文本指令、禁训练/微调。
+- `domain`:领域先验,如医疗/金融/基础设施必须高风险、人审或保守拒绝。
+- `tool`:工具权限,如 `file_generator` 必须声明写入目录、`web_search` 结果只作数据。
+- `swarm/agent`:本任务特定红线,如不得输出未验证答案、不得跨角色解题。
+
+**Risk tier → 默认验证策略**:
+
+| risk_tier | 默认后端 | `allow_model_verification` | 人审 | 失败策略 |
+|---|---|---:|---:|---|
+| `low` | schema/pattern/field | false | false | 可 local retry |
+| `medium` | + `PythonAssertBackend` | false | false | 保守 surface 可恢复失败 |
+| `high` | + `BaseJudgeBackend` / `AspectPanelBackend` | true | 可选 | false accept 优先级高于 false reject |
+| `critical` | + `AgentVerifierBackend` + evidence check | true | true | 默认 `human_review` 或 `abort`,不自动放行 |
+
+这张表是 policy 默认值,不是硬编码:具体任务可降低或升高 `risk_tier`,但**不能**低于 constitution/domain/tool 规则给出的最低风险级别。
 
 **`machine_assertions` 编译规则(M0/M1 子集)**:
 
@@ -378,7 +482,7 @@ def run(message: dict, history: list) -> dict:
 实现要点:
 - 静态检查:`importlib` 试加载 + `inspect` 校验 `run` 签名 + AST 扫 `forbidden_patterns`(如禁止第三方 import 时,扫 import 节点)。
 - 行为检查:为每个 `behavioral_assertion` 构造小输入,跑 agent,断言里能机判的(签名逐字符匹配、禁用 import)直接用代码判,省 token;**机判覆盖不到的语义断言走 §3.7 的多 aspect 验证器面板**(赞成聚合,结果仍映射成带类型失败信号)。**【工程补全】** 断言尽量"代码可判 > 模型判",降低成本与误判。
-- **【工程补全】代表性输入生成**:行为验证需要"代表性输入"来模拟执行 âᵢ。输入从 `behavioral_assertions` 自动派生:每条 assertion 至少生成 1 个最小可行的输入用例(如"检查签名匹配"→ 传入符合 `input_schema` 的标准调用;"检查 forbidden_patterns"→ 传入故意触发禁止模式的输入)。这些用例由 `ConstructionVerifier` 自动构造(用 LLM 根据 assertion + `io_contract.input_schema` 生成),而非手工编写。用例覆盖度 = `behavioral_assertions` 的覆盖率——这是 Stage 2 写出可判定断言的另一个动机。
+- **【工程补全】代表性输入生成**:行为验证需要"代表性输入"来模拟执行 âᵢ。输入从 `machine_assertions` / `behavioral_assertions` 自动派生为 §2 `TestCase`:每条 assertion 至少生成 1 个最小可行的输入用例(如"检查签名匹配"→ 传入符合 `input_schema` 的标准调用;"检查 forbidden_patterns"→ 传入故意触发禁止模式的输入)。这些用例由 `ConstructionVerifier` 自动构造(先用规则生成,必要时用 LLM 根据 assertion + `io_contract.input_schema` 生成),而非手工编写。用例覆盖度 = assertion 覆盖率;失败用例进入 regression set,供 M3 verifier calibration 复用。
 
 ### 3.6 工具注册表(Tool Registry,横切 Stage 3/4/执行期)
 
@@ -546,7 +650,7 @@ class VerifierBackend:
 
     def verify(self, assertion: AssertionSpec, *,
                spec: AgentSpec, message: dict,
-               output: dict, trace: list[TraceEvent]) -> GateResult: ...
+               output: dict, trace: list) -> GateResult: ...
 ```
 
 默认后端顺序:
@@ -566,6 +670,49 @@ class VerifierBackend:
 - 同一断言只交给**第一个**支持且预算允许的 backend;后端失败时不自动降级为更弱 verifier,避免"贵验证失败后用便宜验证放行"。
 - Agent-as-Verifier 必须截断递归:验证器自身的输出只做 schema/预算/安全检查,不得再次触发 agentic verifier。
 - 所有后端都返回统一 `GateResult`,不允许返回裸 bool 或标量分。分数/赞成数只能写入 `TraceEvent.payload`,不能参与恢复路由。
+
+**Claim/Evidence 验证流程(M3,模型判残差专用)**:
+
+```text
+output
+  → extract_claims(output, spec)                # 只抽与 assertion/model_check 有关的 claim
+  → attach_evidence(claim, spec, message, store, trace)
+  → verify_claim(claim, evidence_refs, backend)
+  → aggregate_claim_results(claims) -> GateResult
+```
+
+约束:
+- verifier 不直接评价整段输出,只回答"claim 是否被给定证据支持"。
+- `EvidenceRef.source_type="grounding"` 的外部文本只作数据,不得作为系统指令。
+- 没有足够证据时返回 `verification_status="insufficient"`,默认失败而非放行;高风险任务进入 `human_review`。
+- `StructuredFeedback.evidence` 应指向 `claim_id + evidence_ref`,而不是泛泛写"不正确"。
+
+### 4.5 Judge Bias Mitigation(模型验证偏差缓解)
+
+**【工程补全,借鉴 Agent-as-Judge Survey】** 只要进入 `BaseJudgeBackend` / `AspectPanelBackend` / `AgentVerifierBackend`,必须启用以下防偏差规则:
+
+| 偏差 | 缓解 |
+|---|---|
+| 位置偏差 | 候选排序/选择类验证做 swap test,交换候选顺序后复判 |
+| 自我增强偏差 | verifier prompt 隐去生成器模型名、agent 名、pass index |
+| 长度偏差 | 长输出先抽 claim/摘要,逐 claim 验证,不因篇幅给分 |
+| 权威偏差 | 不把"来自论文/知名模型/上游 agent"当证据;必须落到 `EvidenceRef` |
+| 工具共谋/递归 | AgentVerifier 使用独立工具会话,且 `verification="none"` 截断递归 |
+
+实现要求:
+- 多 verifier 不一致时,把分歧写入 `TraceEvent.payload["verifier_disagreement"]`,不要只保留最终票数。
+- 对 `critical` risk tier,模型验证的通过必须有至少一个非模型证据锚点(schema/assert/tool/result/grounding provenance)。
+- verifier prompt 必须要求输出结构化 JSON,解析失败等价于验证失败,不允许自由文本兜底放行。
+
+### 4.6 Verifier Calibration Protocol(验证器校准)
+
+**【工程补全,借鉴 Promptfoo/Agent-as-Judge 元评估】** M3 上模型 verifier 前,先用 golden cases 校准:
+
+1. 构造 `GoldenVerificationCase`:包含 `spec`、`message`、`output`、预期 `GateResult`、错误 subtype、证据引用。
+2. 覆盖 false accept / false reject / schema violation / role confusion / grounding miss / contract flaw。
+3. 分别跑 `BaseJudgeBackend`、`AspectPanelBackend`、`AgentVerifierBackend`,记录 precision、recall、false accept rate、false reject rate。
+4. 普通任务优化 F1;高风险任务优先压低 false accept。
+5. 校准结果写入 trace 与 release note;未达阈值的 backend 不进入 runtime hot path。
 
 ---
 
@@ -677,6 +824,8 @@ class BudgetMeter(BaseModel):         # 运行时累计,任一超限 → raise B
 
 所有重试/重跑/重规划在动作前 `meter.check(budget)`;超限**不再尝试**,直接 surface 当前最佳 `GateResult` 与失败原因,而非给未验证答案。
 
+触顶输出统一为 §2 `SurfaceFailure`:低/中风险可建议 `retry` 或 `replan`;高风险建议 `human_review`;critical 默认 `abort` 或 `human_review`,不自动返回未验证答案。
+
 ### 7.3 Trace Schema(可观测,且为"分类法进化"提供数据)
 
 逐 Stage / agent / verification pass 全量结构化 trace。它不仅是日志,还是 §5 future-work"`FailureSubtype` 随 trace 增长"的**数据源**,故需 schema 化。
@@ -693,9 +842,51 @@ class TraceEvent(BaseModel):
     recovery_kind: Optional[str] = None        # local/upstream/structural
     tokens: int = 0; latency_ms: int = 0
     payload: dict = Field(default_factory=dict)  # 输入/输出摘要(脱敏)
+
+class TraceSummary(BaseModel):
+    trace_id: str
+    covered_events: list[str]          # TraceEvent id 列表;实现时 event 需有稳定 id
+    summary: str
+    open_questions: list[str] = Field(default_factory=list)
+    evidence_refs: list[EvidenceRef] = Field(default_factory=list)
 ```
 
-一条任务的执行 = 一串 `TraceEvent`,可回放、可做消融对比、可聚类失败(`gate_result.feedback[].subtype` 是天然聚类键)。MVP 落地为 JSONL,生产换可回放事件日志(§7 存储行)。
+一条任务的执行 = 一串 `TraceEvent`,可回放、可做消融对比、可聚类失败(`gate_result.feedback[].subtype` 是天然聚类键)。MVP 落地为 JSONL,生产换可回放事件日志(§7 存储行)。长轨迹进入 AgentVerifier 前先生成 `TraceSummary`,verifier 只能基于 summary + 可追溯 `EvidenceRef` 提问/核查,避免把数百万 token trajectory 直接塞进 judge。
+
+### 7.4 Verification Function Registry
+
+**【工程补全,借鉴 VERIMAP StructuredVerifier】** `AssertionSpec.kind` 不应散落在多个 if/else 里。实现一个注册表,把断言类型、执行后端、沙箱需求和版本绑定:
+
+```python
+class VerificationFunction(BaseModel):
+    name: str
+    assertion_kind: str
+    backend: str                         # e.g. JsonSchemaBackend / PythonAssertBackend
+    input_contract: dict = Field(default_factory=dict)
+    output_contract: dict = Field(default_factory=dict)
+    deterministic: bool = True
+    sandbox_required: bool = True
+    version: str = "v1"
+
+class VerificationFunctionRegistry:
+    def get(self, assertion_kind: str) -> VerificationFunction: ...
+    def validate_assertions(self, plan: SwarmPlan) -> list[str]: ...
+```
+
+M0 注册 `jsonschema` / `field_present` / `field_absent` / `equals_input` / `contains` / `not_contains` / `regex_match`;M1 注册 `python_assert`;M3 注册 `model_check`。新增 `ast_no_imports`、`pytest_passes`、`mypy_clean`、`symbolic_check` 等能力时只扩注册表,不改 `RuntimeGate` 主流程。
+
+### 7.5 外部工具采用边界
+
+**【工程补全】** `docs/analysis/open-source-tools.md` 提供工具候选,但核心 runtime 不绑定重型框架:
+
+| 阶段 | 默认依赖 | 可评估但不进入核心热路径 |
+|---|---|---|
+| M0/M1 | Pydantic / jsonschema / pytest | Guardrails AI、PydanticAI 暂不引入 |
+| M2 | Instructor 可作为 Stage 结构化输出 adapter | 不绑定单一 provider;保留原生 JSON schema 路径 |
+| M3 | Promptfoo 用于 verifier calibration | 不在 runtime gate 实时调用 Promptfoo |
+| 本地模型实验 | Outlines 可用于 constrained generation | 不作为云 API 默认路径 |
+
+原则:外部库只能作为 adapter/backend,不能成为 spec 真相源;`IOContract`、`AssertionSpec`、`GateResult` 仍由本仓库 schema 定义。
 
 ---
 
@@ -706,14 +897,15 @@ class TraceEvent(BaseModel):
 - **Milestone 0 — 骨架与 schema(1~2 周)**  
   - 落地 §2 全部 Pydantic 模型(含**可机判的 `IOContract`/`FieldSpec`/`out_jsonschema`**、统一 `GateResult`);搭 `Coordinator` + `ContextStore`(含 `gather_inputs` §4.2)+ 拓扑执行 + DAG 环检测。  
   - **明确"手写 swarm"的含义**:手工构造 `SwarmPlan` 的 JSON/YAML 配置(含 4 个 `AgentSpec` + DAG 边 + I/O 契约 + 验证标准)和 `implementation_kind="fixture"` 的 `AgentArtifact`,然后让 `ArtifactLoader` + `Coordinator` + `ContextStore` 加载并执行,而非手写 generated agent Python 模块。验收:`has_close_elements` 例子端到端 PASS。  
-  - **推荐初始包结构**:`src/meta_agent/schemas.py`(§2)、`dag.py`(环检测/拓扑序)、`artifacts.py`(`ArtifactLoader`)、`context.py`、`coordinator.py`、`runtime_gate.py`(先放 schema/pattern/machine assertion 机判骨架)、`fixtures/function_completion.py`。测试对应放在 `tests/test_*.py`。
+  - **推荐初始包结构**:`src/meta_agent/schemas.py`(§2)、`dag.py`(环检测/拓扑序)、`artifacts.py`(`ArtifactLoader`)、`context.py`、`coordinator.py`、`runtime_gate.py`(先放 schema/pattern/machine assertion 机判骨架)、`verification_registry.py`、`fixtures/function_completion.py`。测试对应放在 `tests/test_*.py`。
   - **M0 明确不做**:不接真实 LLM、不做 Stage 1→5 自动构造、不跑模型 verifier、不实现恢复路由。M0 只证明"合法 ExecutableSwarm 可按 DAG 和契约稳定执行"。  
   - **快速原型:codegen 可行性验证** —— 手写 10 个 `AgentSpec`(覆盖 code/math/reasoning),测试自动 codegen 的首次成功率。如果 <50%,考虑降级方案(YAML 配置替代 Python 代码生成)。
 
 **Milestone 1 — 执行期验证 + 三级归因 + 结构化反馈(1~2 周)**
 - 实现 `RuntimeGate`(schema/forbidden/`machine_assertions` 三检,**全部机判**)+ `ErrorAttributor` + `RecoveryRouter`;`python_assert` 走最小沙箱,`model_check` 默认拒绝。
-- 落地**两条轴**:`GateResult` 产出 `failure_type`(轴 A)+ `StructuredFeedback`(轴 B,先做机判项的 evidence/expected/fix);local 重试消费结构化反馈。
+- 落地**两条轴**:`GateResult` 产出 `failure_type`(轴 A)+ `StructuredFeedback`(轴 B,先做机判项的 evidence/expected/fix);local 重试消费结构化反馈;预算触顶输出 `SurfaceFailure`。
 - 用论文 §3.3 的四个归因场景做单测(local / upstream / contract / structural 各一)。验收:注入 4 类错误都能被正确分类并恢复。
+- 建 `GoldenVerificationCase` 最小集,覆盖 schema violation / forbidden hit / field mismatch / timeout,为 M3 校准留基线。
 
 **Milestone 2 — 构造期全流水线 + 工具注册表(2~3 周)**
 - 依次实现 Stage 1→5;构造期验证产出 `GateResult` 并按 §6 路由;每 agent ≤3 pass。
@@ -721,7 +913,8 @@ class TraceEvent(BaseModel):
 - 验收:给一段全新的编码任务描述(不在示例里),自动产出可执行 swarm 并通过构造期验证。
 
 **Milestone 3 — MAV/DeepVerifier 增强 + 评测、加固(2~4 周)**
-- **增强(baseline 打平后才上)**:§3.7 多 aspect 面板(模型判残差,便宜档)+ source-checkable 分解;§3.4 BoN 候选选优旋钮;rubric 反馈扩到语义断言;轴 B 子类随 trace 增长(§5 future-work)。
+- **增强(baseline 打平后才上)**:§3.7 多 aspect 面板(模型判残差,便宜档)+ claim/evidence source-checkable 分解;§3.4 BoN 候选选优旋钮;rubric 反馈扩到语义断言;轴 B 子类随 trace 增长(§5 future-work)。
+- 启用 Judge Bias Mitigation 与 Verifier Calibration Protocol:用 golden cases 测 precision/recall/false accept/false reject,未达阈值的模型 verifier 不进入 runtime hot path。
 - 接论文 6 个 benchmark 跑分;做消融;加成本/时间预算与兜底(§7 预算模型);加沙箱加固与并发。
 - 验收:HumanEval/MBPP 达到与论文同量级(§9);**消融自检**——关掉 §3.7 面板,验证"验证仍是承重组件"的趋势。
 
@@ -761,6 +954,9 @@ class TraceEvent(BaseModel):
 | 生成代码不可信 | 自动生成 + 执行 | 三档隔离沙箱、禁网、超时、资源上限(§7.1) |
 | 提示注入 | web_search / 文档 grounding 引入外部文本 | grounding 内容只作"数据"不作"指令";检索结果不进系统提示的指令区(§7.1) |
 | 无限重试/成本失控 | 闭环回退 | 统一 `Budget`/`BudgetMeter`(§7.2):各级重试上限 + 全局预算;触顶 surface failure 而非给未验证答案 |
+| 模型 judge 偏差 | 位置/长度/权威/自我增强偏差 | §4.5 Judge Bias Mitigation:swap test、匿名化、claim/evidence 验证、分歧入 trace |
+| policy 只写不执行 | 安全红线停留在文档层 | §2 `ConstitutionRule` + §3.2 `check_constitution(plan)`,把红线变成 planner/verifier 消费的 spec |
+| 外部框架锁死核心 | Guardrails/PydanticAI/Promptfoo 等能力诱人但重 | §7.5:只作为 adapter/backend,不成为 spec 真相源或 runtime hot path 默认依赖 |
 | 弱于专家手工系统 | **【论文 Limitations】** 全自动 vs 专家先验 | 预留"轻量领域先验"注入点(论文 future work 方向):允许人工为特定 domain 追加 spec 模板/断言 |
 
 ---
