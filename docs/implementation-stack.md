@@ -56,7 +56,7 @@
 |---|---|---|---|
 | forbidden import 扫描 | **`ast`(stdlib)** | A | 扫 import 节点 |
 | 正则 / contains / not_contains | **`re`(stdlib)** | A | PatternBackend |
-| validator 护栏后端 | Guardrails AI | B | 映射 behavioral/forbidden;重型,不进 M0/M1 热路径 |
+| validator 护栏后端 | Guardrails AI | B | 可选 `VerifierBackend` / `ToolGate` 后端,映射 PII/secrets/injection/provenance 等安全与事实性检查;不替代 `GateResult`/归因/恢复 |
 | 对话安全规则 | NeMo Guardrails | B(慎) | 仅对话类;非对话过杀 |
 | verifier 校准(eval 期) | **Promptfoo / DeepEval / Ragas** | B | golden case 跑 precision/false_accept;**不在 runtime gate 实时调** |
 | GateResult / StructuredFeedback / 三级归因 | **自建** | — | 差异化命根子 |

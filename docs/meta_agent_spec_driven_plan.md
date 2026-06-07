@@ -804,12 +804,15 @@ class VerifierBackend:
 | `PatternBackend` | `contains`, `not_contains`, `regex_match`, forbidden patterns | M0 | 纯机判 |
 | `FieldRelationBackend` | `field_present`, `field_absent`, `equals_input` | M0 | 纯机判 |
 | `PythonAssertBackend` | `python_assert` | M2 | 必须走沙箱,只读输入/输出;M1 未接入时必须 fail-closed |
+| `GuardrailsBackend` | `pii_check`, `secrets_present`, `prompt_injection`, `jailbreak_check`, `toxicity_check`, `provenance_check`, `grounded_hallucination` | M2/M3 可选 | Guardrails AI adapter;适合安全/事实性 validator,不进 M0/M1 热路径 |
 | `BaseJudgeBackend` | `model_check` | M3 | 单 LLM judge,便宜档 |
 | `AspectPanelBackend` | `model_check` | M3 | MAV 风格多 aspect 投票,返回 typed feedback |
 | `AgentVerifierBackend` | 需搜索/工具/多步验证的 `model_check` | M3+ | 必须设置 `verification="none"` 防递归 |
 
 路由规则:
 - M0/M1 中出现 `model_check` 视为 `contract` 失败,要求 Stage 2 重写为可机判断言。即使显式开启 `allow_model_verification`,若 verifier backend 尚未注册也必须 fail-closed,不能静默通过。
+- Guardrails AI 只能作为外部 validator 后端:所有 validator pass/fail、reask、exception 都必须转换成统一 `GateResult` / `StructuredFeedback`,并映射到本项目的 `failure_type`。不得让 Guardrails 自己决定是否传播产物,也不得绕过 `ErrorAttributor` / `RecoveryRouter`。
+- Guardrails 适合 `ToolGate` 的 PostToolGate:对 `web_search`、RAG 文档、第三方 agent 输出、external agent diff/trace 做 PII、secrets、prompt injection、provenance 检查。外部文本仍然只作为 data/evidence,不能进入 instruction 区。
 - 同一断言只交给**第一个**支持且预算允许的 backend;后端失败时不自动降级为更弱 verifier,避免"贵验证失败后用便宜验证放行"。
 - Agent-as-Verifier 必须截断递归:验证器自身的输出只做 schema/预算/安全检查,不得再次触发 agentic verifier。
 - 所有后端都返回统一 `GateResult`,不允许返回裸 bool 或标量分。分数/赞成数只能写入 `TraceEvent.payload`,不能参与恢复路由。

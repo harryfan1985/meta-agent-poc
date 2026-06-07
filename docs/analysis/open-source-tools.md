@@ -57,8 +57,9 @@ guard = Guard().use(Validator1).use(Validator2)
 result = guard(model_output)
 ```
 
-- **与 Meta-Agent 关系**: 最直接可用的 RuntimeGate 实现。自定义 validator 可映射到 `behavioral_assertions` 和 `forbidden_patterns`
-- **局限**: validator 需要手工编写（不如 VERIMAP 的 StructuredVerifier 自动生成）
+- **与 Meta-Agent 关系**: 可作为 `RuntimeGate` / `ToolGate` 的可选 `VerifierBackend`,尤其适合 PII、secrets、prompt injection、jailbreak、toxicity、provenance、grounded hallucination 等安全/事实性检查。自定义 validator 可映射到 `behavioral_assertions`、`forbidden_patterns` 或 tool result post-check。
+- **边界**: 不应作为 `RuntimeGate` 核心实现,也不能替代本项目的 `GateResult`、`StructuredFeedback`、`failure_type`、`ErrorAttributor` 和 `RecoveryRouter`。Guardrails 可以发现风险,但失败后的 local / upstream / structural 归因与最小代价恢复仍由 Meta-Agent control plane 决定。
+- **局限**: validator 需要手工编写或从 Hub 安装;部分 validator 依赖模型/远程服务,有成本、延迟、隐私和可复现性问题。M0/M1 不进入热路径,M2/M3 仅按需接入高价值 validator。
 
 ### NVIDIA NeMo Guardrails
 
