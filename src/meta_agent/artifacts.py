@@ -8,6 +8,7 @@ import importlib
 from typing import Callable
 
 from .schemas import AgentArtifact, AgentSpec, ExecutableSwarm
+from .validation import surface_contract_issues
 
 
 def _import_entrypoint(module_path: str, entrypoint: str) -> Callable:
@@ -33,8 +34,50 @@ class ArtifactLoader:
             return lambda message, history: adapter.invoke(spec, message, history)
         raise ValueError(f"unknown implementation_kind: {kind}")
 
+    def validate(self, swarm: ExecutableSwarm) -> list[str]:
+        """执行前校验 artifact 覆盖与后端引用,避免运行期裸 KeyError。"""
+        issues: list[str] = []
+        spec_ids = set(swarm.spec_ids)
+        artifact_ids = set(swarm.artifacts)
+        missing = sorted(spec_ids - artifact_ids)
+        extra = sorted(artifact_ids - spec_ids)
+        if missing:
+            issues.append(f"missing artifacts for specs: {missing}")
+        if extra:
+            issues.append(f"artifacts reference unknown specs: {extra}")
+
+        for spec_id, artifact in swarm.artifacts.items():
+            if spec_id != artifact.spec_id:
+                issues.append(f"{spec_id}: artifact.spec_id mismatch: {artifact.spec_id}")
+            kind = artifact.implementation_kind
+            if kind == "fixture":
+                if not artifact.handler_ref:
+                    issues.append(f"{spec_id}: fixture artifact missing handler_ref")
+                elif artifact.handler_ref not in self.fixture_registry:
+                    issues.append(f"{spec_id}: unknown fixture handler_ref {artifact.handler_ref!r}")
+            elif kind == "python_module":
+                if not artifact.module_path:
+                    issues.append(f"{spec_id}: python_module artifact missing module_path")
+            elif kind == "prompt_template":
+                issues.append(f"{spec_id}: prompt_template backend is not implemented before M2")
+            elif kind == "external_agent":
+                if not artifact.adapter_name:
+                    issues.append(f"{spec_id}: external_agent artifact missing adapter_name")
+                elif artifact.adapter_name not in self.adapters:
+                    issues.append(f"{spec_id}: unknown adapter_name {artifact.adapter_name!r}")
+        return issues
+
     def bind(self, swarm: ExecutableSwarm) -> ExecutableSwarm:
         """加载所有 artifact 填进 swarm._loaded,返回同一 swarm。"""
+        issues = self.validate(swarm)
+        if issues:
+            raise surface_contract_issues("artifact preflight failed", issues)
         for spec_id, artifact in swarm.artifacts.items():
-            swarm._loaded[spec_id] = self.load(artifact, swarm.spec(spec_id))
+            try:
+                swarm._loaded[spec_id] = self.load(artifact, swarm.spec(spec_id))
+            except Exception as e:  # noqa: BLE001
+                raise surface_contract_issues(
+                    "artifact load failed",
+                    [f"{spec_id}: {type(e).__name__}: {e}"],
+                ) from e
         return swarm

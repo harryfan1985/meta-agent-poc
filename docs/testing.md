@@ -104,6 +104,7 @@
 | GATE-07 | 多检查同时失败 | `failure_type` 按 `FAILURE_PRIORITY`(contract>grounding>spec_adherence) |
 | GATE-08 | **机判失败也产 StructuredFeedback** | evidence/expected/actionable_fix 三项非空,非扁平字符串 |
 | GATE-09 | M0/M1 出现 `model_check` 且 `allow_model_verification=False` | 判 `contract`,逼回机判 |
+| GATE-09b | `allow_model_verification=True` 但无 verifier backend | fail-closed,不得静默通过 |
 | GATE-10 | 构造期/执行期同构 | ConstructionVerifier 与 RuntimeGate 返回同一 `GateResult` 形状 |
 
 ### 2.6 ErrorAttributor 三级归因 + RecoveryRouter — [det] ⭐ 核心
@@ -149,7 +150,8 @@
 |---|---|---|
 | BUD-01 | `max_llm_calls`/`max_tokens`/`max_wall_seconds` 超限 | `BudgetExceeded` |
 | BUD-02 | 触顶 | `SurfaceFailure`(非未验证答案) |
-| BUD-03 | 每次重试/重跑/重规划前 | 先 `meter.check(budget)` |
+| BUD-03 | 每次 agent 调用前 | 先 `reserve_run()` 预占调用额度,预算触顶时 agent 不执行 |
+| BUD-04 | agent 调用后 | `record_run(tokens=...)` 只记录 token/耗时,不补扣调用次数 |
 
 ### 2.10 Verifier Backend Stack(§4.5,M3)— [det] 契约 + [eval]
 
@@ -209,7 +211,8 @@
 
 | ID | 用例 | 期望 |
 |---|---|---|
-| SBX-01 | `python_assert` backend | 沙箱内只读输入/输出,不可写文件 |
+| SBX-00 | M1 未接入 `python_assert` backend | fail-closed,不得静默通过 |
+| SBX-01 | `python_assert` backend(M2) | 沙箱内只读输入/输出,不可写文件 |
 | SBX-02 | 生成代码尝试出网(socket) | 阻断 |
 | SBX-03 | 生成代码死循环 | 超时 → `TIMEOUT` |
 | SBX-04 | 超大输出 | `OUTPUT_TOO_LARGE` |

@@ -15,6 +15,7 @@ from .dag import (
 )
 from .runtime_gate import RuntimeGate
 from .tools import PostToolGate, PreToolGate, ToolRegistry
+from .validation import assert_valid_plan, validate_plan
 from .schemas import (
     AgentArtifact,
     AgentSpec,
@@ -58,6 +59,8 @@ __all__ = [
     "ToolRegistry",
     "PreToolGate",
     "PostToolGate",
+    "validate_plan",
+    "assert_valid_plan",
     "ToolDefinition",
     "ToolGateResult",
     "GoldenVerificationCase",

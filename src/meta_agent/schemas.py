@@ -8,7 +8,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any, Callable, Literal, Optional
 
-from pydantic import BaseModel, Field, PrivateAttr
+from pydantic import BaseModel, Field, PrivateAttr, model_validator
 
 # ---------------------------------------------------------------- IO contract
 
@@ -29,6 +29,19 @@ class IOContract(BaseModel):
     required_out: list[str] = Field(default_factory=list)
     description: str = ""
 
+    @model_validator(mode="after")
+    def required_fields_must_be_declared(self) -> "IOContract":
+        missing_in = sorted(set(self.required_in) - set(self.input_schema))
+        missing_out = sorted(set(self.required_out) - set(self.output_schema))
+        if missing_in or missing_out:
+            parts = []
+            if missing_in:
+                parts.append(f"required_in not in input_schema: {missing_in}")
+            if missing_out:
+                parts.append(f"required_out not in output_schema: {missing_out}")
+            raise ValueError("; ".join(parts))
+        return self
+
     def out_jsonschema(self) -> dict:
         """编译成标准 JSON Schema,供 RuntimeGate 机判 output。"""
         return {
@@ -37,6 +50,7 @@ class IOContract(BaseModel):
             "properties": {
                 k: v.model_dump(exclude_none=True) for k, v in self.output_schema.items()
             },
+            "additionalProperties": False,
         }
 
 
@@ -50,7 +64,7 @@ AssertionKind = Literal[
     "not_contains",
     "regex_match",
     "jsonschema",
-    "python_assert",  # M1 沙箱后端
+    "python_assert",  # M2 沙箱后端;M1 fail-closed
     "model_check",  # M3 模型判;M0/M1 默认拒绝
 ]
 
@@ -171,6 +185,7 @@ class FailureSubtype(str, Enum):
     FORBIDDEN_HIT = "forbidden_hit"
     TOOL_MISUSE = "tool_misuse"
     TIMEOUT = "timeout"
+    RUNTIME_ERROR = "runtime_error"
     OUTPUT_TOO_LARGE = "output_too_large"
     MISSING_KNOWLEDGE = "missing_knowledge"
     STALE_SOURCE = "stale_source"

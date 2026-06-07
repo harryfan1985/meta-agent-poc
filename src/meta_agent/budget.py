@@ -24,12 +24,16 @@ class BudgetMeter:
         if self._clock() - self.started_at > budget.max_wall_seconds:
             raise BudgetExceeded("wall", f">{budget.max_wall_seconds}s")
 
-    def record_run(self, budget: Budget, tokens: int = 0) -> None:
-        """每次 agent 调用前后计量;超限即抛。"""
+    def reserve_run(self, budget: Budget) -> None:
+        """agent 调用前预占一次调用额度;超限即抛,避免先花钱/改文件再报错。"""
         self.llm_calls += 1
-        self.tokens += tokens
         if self.llm_calls > budget.max_llm_calls:
             raise BudgetExceeded("llm_calls", f"{self.llm_calls}>{budget.max_llm_calls}")
+        self.check_wall(budget)
+
+    def record_run(self, budget: Budget, tokens: int = 0) -> None:
+        """agent 调用后记录 token/耗时;调用次数必须已由 reserve_run 预占。"""
+        self.tokens += tokens
         if self.tokens > budget.max_tokens:
             raise BudgetExceeded("tokens", f"{self.tokens}>{budget.max_tokens}")
         self.check_wall(budget)

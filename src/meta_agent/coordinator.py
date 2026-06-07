@@ -17,7 +17,17 @@ from .budget import BudgetExceeded, BudgetMeter
 from .context import TASK_INPUT, ContextStore
 from .dag import topo_order
 from .runtime_gate import RuntimeGate
-from .schemas import Budget, ContractMismatch, ExecutableSwarm, SurfaceFailure
+from .schemas import (
+    Budget,
+    ContractMismatch,
+    ExecutableSwarm,
+    FailureSubtype,
+    FailureType,
+    GateResult,
+    StructuredFeedback,
+    SurfaceFailure,
+)
+from .validation import assert_valid_plan
 
 
 def execute(
@@ -31,6 +41,7 @@ def execute(
     store = store or ContextStore()
     store.put(TASK_INPUT, task_input)
 
+    assert_valid_plan(swarm.plan)
     order = topo_order(swarm.spec_ids, swarm.dag)
     policy = swarm.plan.verification_policy
     local_retries: dict[str, int] = defaultdict(int)
@@ -50,7 +61,28 @@ def execute(
                 # 缺字段/歧义 = 分解缺陷 → structural;M1 上浮(replan 属 M2)
                 raise SurfaceFailure(f"structural (contract mismatch): {e}", spec_id=spec_id)
 
-            output = swarm.agent(spec_id)(inputs, history[spec_id])
+            meter.reserve_run(budget)
+            try:
+                output = swarm.agent(spec_id)(inputs, history[spec_id])
+            except SurfaceFailure:
+                raise
+            except Exception as e:  # noqa: BLE001
+                raise SurfaceFailure(
+                    f"agent runtime error: {e}",
+                    spec_id=spec_id,
+                    gate_result=GateResult(
+                        ok=False,
+                        failure_type=FailureType.SPEC_ADHERENCE,
+                        feedback=[
+                            StructuredFeedback(
+                                subtype=FailureSubtype.RUNTIME_ERROR.value,
+                                evidence=f"{type(e).__name__}: {e}",
+                                expected="agent callable returns dict matching output_schema without raising",
+                                actionable_fix="修复 agent 实现、fixture、adapter 或运行环境",
+                            )
+                        ],
+                    ),
+                ) from e
             meter.record_run(budget)
 
             gate = RuntimeGate.check(output, spec, message=inputs, policy=policy)

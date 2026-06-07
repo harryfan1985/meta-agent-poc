@@ -220,7 +220,7 @@ def build_plan() -> SwarmPlan:
         verification_criteria=VerificationCriteria(
             behavioral_assertions=["final_code 行为满足 parsed_spec 全部 edge_cases"],
             machine_assertions=[
-                # M0:cv1 用 regex(附录 A 原为 python_assert,属 M1 沙箱,见 A.4 降级说明)
+                # M0/M1:cv1 用 regex(附录 A 原为 python_assert;沙箱 backend 推迟到 M2)
                 AssertionSpec(
                     assertion_id="cv1",
                     kind="regex_match",

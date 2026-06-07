@@ -88,7 +88,11 @@ class IOContract(BaseModel):
     def out_jsonschema(self) -> dict:     # 编译成标准 JSON Schema,供机判校验
         return {"type": "object", "required": self.required_out,
                 "properties": {k: v.model_dump(exclude_none=True)
-                               for k, v in self.output_schema.items()}}
+                               for k, v in self.output_schema.items()},
+                "additionalProperties": False}
+
+    # M1:required_in/out 必须分别属于 input_schema/output_schema;
+    # 输出契约默认封闭,未声明字段不得传播。
 
 # 【工程补全】论文的 behavioral_assertions 是自然语言列表。为保证 M1
 # RuntimeGate 能全部机判,这里增加可执行断言层:保留原文断言供 prompt/trace
@@ -458,6 +462,8 @@ def check_schema_alignment(plan: SwarmPlan) -> list[str]:
 
 此检查在 `registry.validate(plan)` 之后、`ConstructionVerifier` 之前执行。不通过则判 `contract` 失败,带具体字段名反馈退回 Stage 2 重规划。
 
+M1 runtime 额外执行同一类 preflight:`spec.dependencies` 必须与 `dag_edges` 推导出的直接前驱完全一致。执行顺序与数据流不能有两套真相源;若二者漂移,在任何 agent 调用前 `SurfaceFailure(contract/decomp_flaw)`。
+
 **【工程补全】Constitution / Policy 校验(Stage 2 后)**:
 
 ```python
@@ -685,6 +691,8 @@ class ArtifactLoader:
 
 `Coordinator` 只看 callable,不关心 agent 是 fixture、prompt 模板、生成模块还是外部 code agent(adapter)。这样 M0/M2/M3 共享同一个执行期,**外部 agent 的输出和本地产物一样必须过 `RuntimeGate`**,不开后门。
 
+M1 preflight:`ArtifactLoader.bind()` 必须先验证每个 `spec_id` 都有 artifact、无多余 artifact、fixture `handler_ref` 已注册、`python_module.module_path` 存在、`external_agent.adapter_name` 已注册。失败统一上浮为 `SurfaceFailure(contract/decomp_flaw)`,不允许运行期裸 `KeyError`。
+
 ### 4.2 ContextStore
 
 **【论文】** in-memory context store 路由中间产物。**【工程补全】** 接口:`put(spec_id, output)` / `gather_inputs(spec_id, swarm)` / `history(spec_id)`。生产环境可换持久化后端以支持回放与调试(类似论文相关工作 AgentGit 的 branching/rollback 思路)。
@@ -775,13 +783,13 @@ class VerifierBackend:
 | `JsonSchemaBackend` | `jsonschema`, required fields | M0 | 纯机判,无 LLM |
 | `PatternBackend` | `contains`, `not_contains`, `regex_match`, forbidden patterns | M0 | 纯机判 |
 | `FieldRelationBackend` | `field_present`, `field_absent`, `equals_input` | M0 | 纯机判 |
-| `PythonAssertBackend` | `python_assert` | M1 | 必须走沙箱,只读输入/输出 |
+| `PythonAssertBackend` | `python_assert` | M2 | 必须走沙箱,只读输入/输出;M1 未接入时必须 fail-closed |
 | `BaseJudgeBackend` | `model_check` | M3 | 单 LLM judge,便宜档 |
 | `AspectPanelBackend` | `model_check` | M3 | MAV 风格多 aspect 投票,返回 typed feedback |
 | `AgentVerifierBackend` | 需搜索/工具/多步验证的 `model_check` | M3+ | 必须设置 `verification="none"` 防递归 |
 
 路由规则:
-- M0/M1 中出现 `model_check` 视为 `contract` 失败,要求 Stage 2 重写为可机判断言,除非显式开启 `allow_model_verification`。
+- M0/M1 中出现 `model_check` 视为 `contract` 失败,要求 Stage 2 重写为可机判断言。即使显式开启 `allow_model_verification`,若 verifier backend 尚未注册也必须 fail-closed,不能静默通过。
 - 同一断言只交给**第一个**支持且预算允许的 backend;后端失败时不自动降级为更弱 verifier,避免"贵验证失败后用便宜验证放行"。
 - Agent-as-Verifier 必须截断递归:验证器自身的输出只做 schema/预算/安全检查,不得再次触发 agentic verifier。
 - 所有后端都返回统一 `GateResult`,不允许返回裸 bool 或标量分。分数/赞成数只能写入 `TraceEvent.payload`,不能参与恢复路由。
@@ -1041,7 +1049,7 @@ class BudgetMeter(BaseModel):         # 运行时累计,任一超限 → raise B
     llm_calls: int = 0; tokens: int = 0; started_at: float = 0
 ```
 
-所有重试/重跑/重规划在动作前 `meter.check(budget)`;超限**不再尝试**,直接 surface 当前最佳 `GateResult` 与失败原因,而非给未验证答案。
+所有重试/重跑/重规划在动作前 `meter.check(budget)`;agent 调用必须先 `reserve_run()` 预占预算,再执行外部 LLM/code agent,最后 `record_run(tokens=...)` 记录 token/耗时。超限**不再尝试**,直接 surface 当前最佳 `GateResult` 与失败原因,而非给未验证答案。
 
 触顶输出统一为 §2 `SurfaceFailure`:低/中风险可建议 `retry` 或 `replan`;高风险建议 `human_review`;critical 默认 `abort` 或 `human_review`,不自动返回未验证答案。
 
@@ -1092,7 +1100,7 @@ class VerificationFunctionRegistry:
     def validate_assertions(self, plan: SwarmPlan) -> list[str]: ...
 ```
 
-M0 注册 `jsonschema` / `field_present` / `field_absent` / `equals_input` / `contains` / `not_contains` / `regex_match`;M1 注册 `python_assert`;M3 注册 `model_check`。新增 `ast_no_imports`、`pytest_passes`、`mypy_clean`、`symbolic_check` 等能力时只扩注册表,不改 `RuntimeGate` 主流程。
+M0/M1 注册 `jsonschema` / `field_present` / `field_absent` / `equals_input` / `contains` / `not_contains` / `regex_match`;M2 注册带沙箱的 `python_assert`;M3 注册 `model_check`。新增 `ast_no_imports`、`pytest_passes`、`mypy_clean`、`symbolic_check` 等能力时只扩注册表,不改 `RuntimeGate` 主流程。
 
 ### 7.5 外部工具采用边界
 
@@ -1123,7 +1131,7 @@ M0 注册 `jsonschema` / `field_present` / `field_absent` / `equals_input` / `co
   - **快速原型:codegen 可行性验证** —— 手写 10 个 `AgentSpec`(覆盖 code/math/reasoning),测试自动 codegen 的首次成功率。如果 <50%,考虑降级方案(YAML 配置替代 Python 代码生成)。
 
 **Milestone 1 — 执行期验证 + 三级归因 + 结构化反馈(1~2 周)**
-- 实现 `RuntimeGate`(schema/forbidden/`machine_assertions` 三检,**全部机判**)+ `ErrorAttributor` + `RecoveryRouter`;`python_assert` 走最小沙箱,`model_check` 默认拒绝。
+- 实现 `RuntimeGate`(schema/forbidden/`machine_assertions` 三检,**全部机判**)+ `ErrorAttributor` + `RecoveryRouter`;`python_assert` 在 M1 fail-closed(沙箱 backend 推迟到 M2),`model_check` 默认拒绝,且 backend 缺失时即使策略开启也不得静默通过。
 - 实现 `PreToolGate` / `PostToolGate` 的最小机判版本:工具名、参数 schema、side_effects、输出大小、taint 标签。
 - 落地**两条轴**:`GateResult` 产出 `failure_type`(轴 A)+ `StructuredFeedback`(轴 B,先做机判项的 evidence/expected/fix);local 重试消费结构化反馈;预算触顶输出 `SurfaceFailure`。
 - 产出 `VerificationCoverage`,至少覆盖 schema/assertion/tool 三类覆盖率。
@@ -1352,7 +1360,7 @@ swarm = ExecutableSwarm(plan=plan, artifacts=artifacts)
 
 ### A.4 一次执行的 gate 验收(端到端)
 
-> 纯机判项(`sa1/sa2/ap1/cs1` + forbidden 扫描)M0 即可跑;`cv1` 是 `python_assert`,按 §4.5 属 M1 沙箱后端——M0 可临时降级为 `contains`/`regex_match` 等价检查,M1 再换回 `python_assert`。
+> 纯机判项(`sa1/sa2/ap1/cs1` + forbidden 扫描)M0/M1 即可跑;`cv1` 是 `python_assert`,按 §4.5 属 M2 沙箱后端——M0/M1 临时降级为 `contains`/`regex_match` 等价检查,直到沙箱 backend 接入后再换回 `python_assert`。
 
 ```text
 task_input = {raw_signature:"def has_close_elements(numbers: List[float], threshold: float) -> bool",
@@ -1363,7 +1371,7 @@ task_input = {raw_signature:"def has_close_elements(numbers: List[float], thresh
 3. code_synthesizer ← raw_signature+parsed_spec+approach
                                            gate: cs1(def 正则)✓ forbidden(无 import os)✓
 4. code_verifier  ← candidate_code+parsed_spec
-                                           gate: cv1(python_assert 沙箱)✓ → final_code, passed=True
+                                           gate: cv1(regex 等价机判;M2 可换 python_assert 沙箱)✓ → final_code, passed=True
 → store.final_output(swarm) = {final_code, passed:True}   # has_close_elements 端到端 PASS
 ```
 

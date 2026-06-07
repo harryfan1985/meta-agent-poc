@@ -89,3 +89,17 @@ def test_e2e04_local_recovery_succeeds_on_retry():
     out = execute(swarm, dict(TASK_INPUT_EXAMPLE))
     assert out["passed"] is True
     assert state["calls"] == 2  # 恰好一次重试后成功
+
+
+def test_e2e06_agent_exception_surfaces_typed_failure():
+    swarm = build_swarm()
+
+    def boom(message, history):
+        raise RuntimeError("fixture exploded")
+
+    swarm._loaded["spec_analyzer"] = boom
+    with pytest.raises(SurfaceFailure) as ei:
+        execute(swarm, dict(TASK_INPUT_EXAMPLE))
+    assert ei.value.spec_id == "spec_analyzer"
+    assert ei.value.gate_result.failure_type.value == "spec_adherence"
+    assert any(f.subtype == "runtime_error" for f in ei.value.gate_result.feedback)

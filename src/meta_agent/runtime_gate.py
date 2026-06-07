@@ -1,7 +1,7 @@
 """RuntimeGate(§4.3)— M0 机判骨架。
 
 只做机判:schema(out_jsonschema)→ forbidden_patterns → machine_assertions。
-model_check 在 M0/M1 默认拒绝(判 contract);python_assert 属 M1 沙箱后端。
+model_check 在 M0/M1 默认拒绝(判 contract);python_assert 沙箱后端尚未实现。
 所有失败都产出带类型 + StructuredFeedback 的 GateResult,不退化成 bool。
 """
 from __future__ import annotations
@@ -172,11 +172,16 @@ class RuntimeGate:
                     "可机判断言(schema/field/regex/...)",
                     subtype="model_check_not_allowed",
                 )
-        elif k == "python_assert":
-            # python_assert 属 M1 沙箱后端;M0 不执行
             return fail(
-                "python_assert 属 M1 沙箱后端,M0 不执行;请降级为 regex/contains",
-                "M0 等价机判检查",
+                "model_check 已被策略允许,但 verifier backend 尚未注册;不能静默通过",
+                "注册 BaseJudge/AspectPanel/AgentVerifier backend 后再启用",
+                subtype="model_check_backend_missing",
+            )
+        elif k == "python_assert":
+            # python_assert 必须走沙箱 backend;当前实现未接入,不能静默执行。
+            return fail(
+                "python_assert backend 尚未实现;请降级为 regex/contains 或接入沙箱",
+                "等价机判检查或只读沙箱 backend",
                 subtype="python_assert_unsupported",
             )
         return None

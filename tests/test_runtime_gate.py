@@ -1,3 +1,6 @@
+import pytest
+from pydantic import ValidationError
+
 from meta_agent.runtime_gate import RuntimeGate
 from meta_agent.schemas import (
     AgentSpec,
@@ -40,6 +43,23 @@ def test_gate02_schema_violation_missing_required():
 def test_gate02b_schema_violation_wrong_type():
     g = RuntimeGate.check({"final_code": "x", "passed": "yes"}, _spec())  # passed 非 bool
     assert g.ok is False
+
+
+def test_gate02c_extra_output_field_rejected_by_closed_contract():
+    g = RuntimeGate.check(
+        {"final_code": "x", "passed": True, "undeclared": "leak"},
+        _spec(),
+    )
+    assert g.ok is False
+    assert any("Additional properties" in f.evidence for f in g.feedback)
+
+
+def test_iocontract_required_fields_must_be_declared():
+    f = FieldSpec(type="string", description="x")
+    with pytest.raises(ValidationError):
+        IOContract(input_schema={"x": f}, required_in=["missing"])
+    with pytest.raises(ValidationError):
+        IOContract(output_schema={"x": f}, required_out=["missing"])
 
 
 def test_gate03_forbidden_hit():
@@ -108,14 +128,15 @@ def test_gate09_model_check_rejected_in_m0():
     assert g.failure_type == FailureType.CONTRACT  # 逼回机判
 
 
-def test_gate09b_model_check_allowed_passes_through():
+def test_gate09b_model_check_allowed_but_backend_missing_fails_closed():
     a = AssertionSpec(assertion_id="m1", kind="model_check", target_path="/final_code")
     g = RuntimeGate.check(
         {"final_code": "x", "passed": True}, _spec(machine_assertions=[a]),
         policy=VerificationPolicy(allow_model_verification=True),
     )
-    # 允许后 M0 不实际跑模型判,等于跳过该断言 → ok
-    assert g.ok is True
+    assert g.ok is False
+    assert g.failure_type == FailureType.CONTRACT
+    assert any(f.subtype == "model_check_backend_missing" for f in g.feedback)
 
 
 def test_gate_field_absent():
