@@ -19,6 +19,7 @@ from .schemas import (
     FailureType,
     GateResult,
     StructuredFeedback,
+    VerificationCoverage,
     VerificationPolicy,
 )
 
@@ -98,11 +99,22 @@ class RuntimeGate:
                 )
                 results.append((fb, ft))
 
+        coverage = VerificationCoverage(
+            schema_fields_total=len(spec.io_contract.output_schema),
+            schema_fields_checked=len(spec.io_contract.output_schema),
+            assertions_total=len(vc.machine_assertions),
+            assertions_checked=len(vc.machine_assertions),
+            forbidden_total=len(vc.forbidden_patterns),
+            forbidden_checked=len(vc.forbidden_patterns),
+        )
+
         if not results:
-            return GateResult(ok=True)
+            return GateResult(ok=True, coverage=coverage)
         types = {ft for _, ft in results}
         ftype = next((t for t in FAILURE_PRIORITY if t in types), FailureType.SPEC_ADHERENCE)
-        return GateResult(ok=False, failure_type=ftype, feedback=[fb for fb, _ in results])
+        return GateResult(
+            ok=False, failure_type=ftype, feedback=[fb for fb, _ in results], coverage=coverage
+        )
 
     @staticmethod
     def _check_assertion(

@@ -187,12 +187,29 @@ class StructuredFeedback(BaseModel):
     actionable_fix: str = ""
 
 
+class VerificationCoverage(BaseModel):
+    """验证充分性(§4.8):gate passed 只说已执行的检查过了,不说验得够。
+    M1 填充 schema / assertion / forbidden;claim/edge/tool/regression 留 M2/M3。"""
+
+    schema_fields_total: int = 0
+    schema_fields_checked: int = 0
+    assertions_total: int = 0
+    assertions_checked: int = 0
+    forbidden_total: int = 0
+    forbidden_checked: int = 0
+    claims_total: int = 0
+    claims_verified: int = 0
+    tool_calls_total: int = 0
+    tool_calls_gated: int = 0
+
+
 class GateResult(BaseModel):
     """构造期 ConstructionVerifier 与执行期 RuntimeGate 共用。"""
 
     ok: bool
     failure_type: Optional[FailureType] = None  # 轴 A:路由
     feedback: list[StructuredFeedback] = Field(default_factory=list)  # 轴 B:修复
+    coverage: Optional[VerificationCoverage] = None  # §4.8 验证充分性
 
 
 class RecoveryAction(BaseModel):
@@ -214,6 +231,41 @@ class Budget(BaseModel):
     max_construct_passes: int = 3  # 构造期验证 pass(M2)
     max_replans: int = 2  # structural 重规划(M2)
     bon_n: int = 1  # §3.4 BoN 候选数,1=关闭
+
+
+# ---------------------------------------------------------------- tools (§3.6 / §4.4)
+
+
+class ToolDefinition(BaseModel):
+    name: str
+    backend_schema: dict = Field(default_factory=dict)  # 参数 JSON Schema
+    handler_ref: str = ""
+    requires_network: bool = False
+    side_effects: Literal["none", "read", "write"] = "none"
+
+
+class ToolGateResult(BaseModel):
+    ok: bool
+    tool_name: str
+    stage: Literal["pre", "post"]
+    gate_result: GateResult
+
+
+# ---------------------------------------------------------------- golden cases (§4.7)
+
+
+class GoldenVerificationCase(BaseModel):
+    """verifier 校准基线(§4.7)。M1 建最小集校准机判 gate;M3 用于模型判校准。
+    evidence_refs 在 M1 用松散 dict(完整 EvidenceRef 属 M3)。"""
+
+    case_id: str
+    spec_id: str
+    message: dict = Field(default_factory=dict)
+    output: dict = Field(default_factory=dict)
+    expected_ok: bool
+    expected_failure_type: Optional[Literal["spec_adherence", "grounding", "contract"]] = None
+    expected_subtypes: list[str] = Field(default_factory=list)
+    evidence_refs: list[dict] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------- exceptions

@@ -251,6 +251,42 @@ def build_plan() -> SwarmPlan:
     )
 
 
+def build_golden_cases():
+    """verifier 校准最小集(§4.7):覆盖 pass / schema_violation / forbidden_hit /
+    field_mismatch。M1 用于确认机判 gate 行为符合预期,M3 复用于模型判校准。"""
+    from ..schemas import GoldenVerificationCase
+
+    return [
+        GoldenVerificationCase(
+            case_id="g_pass_verifier", spec_id="code_verifier",
+            message={"candidate_code": CANDIDATE_CODE, "parsed_spec": {}},
+            output={"final_code": CANDIDATE_CODE, "passed": True},
+            expected_ok=True,
+        ),
+        GoldenVerificationCase(
+            case_id="g_schema_violation_analyzer", spec_id="spec_analyzer",
+            message={"raw_signature": "def f()", "docstring": "d"},
+            output={"raw_signature": "def f()"},  # 缺 parsed_spec
+            expected_ok=False, expected_failure_type="spec_adherence",
+            expected_subtypes=["schema_violation"],
+        ),
+        GoldenVerificationCase(
+            case_id="g_forbidden_hit_verifier", spec_id="code_verifier",
+            message={"candidate_code": CANDIDATE_CODE, "parsed_spec": {}},
+            output={"final_code": "import os\n" + CANDIDATE_CODE, "passed": True},
+            expected_ok=False, expected_failure_type="spec_adherence",
+            expected_subtypes=["forbidden_hit"],
+        ),
+        GoldenVerificationCase(
+            case_id="g_field_mismatch_analyzer", spec_id="spec_analyzer",
+            message={"raw_signature": "def f()", "docstring": "d"},
+            output={"raw_signature": "WRONG", "parsed_spec": {"inequality_strict": True}},
+            expected_ok=False, expected_failure_type="contract",
+            expected_subtypes=["field_mismatch"],
+        ),
+    ]
+
+
 def build_swarm(analyzer_handler: str = "fx_spec_analyzer") -> ExecutableSwarm:
     """构造并绑定可执行 swarm。analyzer_handler 可换成错误注入变体。"""
     plan = build_plan()

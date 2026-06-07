@@ -14,6 +14,7 @@ from .dag import (
     topo_order,
 )
 from .runtime_gate import RuntimeGate
+from .tools import PostToolGate, PreToolGate, ToolRegistry
 from .schemas import (
     AgentArtifact,
     AgentSpec,
@@ -25,11 +26,15 @@ from .schemas import (
     FailureType,
     FieldSpec,
     GateResult,
+    GoldenVerificationCase,
     IOContract,
     RecoveryAction,
     StructuredFeedback,
     SurfaceFailure,
     SwarmPlan,
+    ToolDefinition,
+    ToolGateResult,
+    VerificationCoverage,
     VerificationCriteria,
     VerificationPolicy,
 )
@@ -50,6 +55,13 @@ __all__ = [
     "affected_subgraph",
     "DagCycleError",
     "RuntimeGate",
+    "ToolRegistry",
+    "PreToolGate",
+    "PostToolGate",
+    "ToolDefinition",
+    "ToolGateResult",
+    "GoldenVerificationCase",
+    "VerificationCoverage",
     "AgentArtifact",
     "AgentSpec",
     "AssertionSpec",
