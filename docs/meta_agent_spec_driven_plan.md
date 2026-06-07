@@ -1101,6 +1101,8 @@ M0 注册 `jsonschema` / `field_present` / `field_absent` / `equals_input` / `co
 
 原则:外部库只能作为 adapter/backend,不能成为 spec 真相源;`IOContract`、`AssertionSpec`、`GateResult` 仍由本仓库 schema 定义。
 
+> 全实现栈(非仅验证)的开源重用分级、按 Layer/里程碑的引入时机、以及"编排框架为何不作核心"的论证,见 [implementation-stack.md](implementation-stack.md)。
+
 ---
 
 ## 8. 分阶段落地路线

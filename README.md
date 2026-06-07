@@ -23,6 +23,7 @@
 - 📄 **[docs/architecture.md](docs/architecture.md)** —— 系统架构与 code agent 集成方式:Meta-Agent Engine 作为 control plane,Claude Code/opencode/Pi agent 作为 execution plane。
 - 📄 **[docs/frontend.md](docs/frontend.md)** —— 前端设计:graph-first workflow debugger / verification cockpit。
 - 📄 **[docs/testing.md](docs/testing.md)** —— 实施前的测试策略与测试用例(按 M0–M3 + 组件,确定性核单测 / 模型判金标准 / mutation 等 meta 验证)。
+- 📄 **[docs/implementation-stack.md](docs/implementation-stack.md)** —— 开源项目重用分析:自建控制面 vs 重用执行面,按 Layer/里程碑分级(A 采用 / B 选用 / C 只研究 / D 出界)。
 - 📄 **[docs/analysis/](docs/analysis/README.md)** —— 相关论文与开源验证工具调研(MAV、DeepVerifier、VERIMAP、Agent-as-Judge、Guardrails 等),作为设计参考而非真相源。
 - 📄 **[AGENTS.md](AGENTS.md)** —— 给在本仓库工作的 AI agent / 协作者的项目指引。
 
