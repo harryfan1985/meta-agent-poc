@@ -172,11 +172,14 @@ class ToolDefinition(BaseModel):
 # ---------- 构造产物 ----------
 class AgentArtifact(BaseModel):
     spec_id: str
-    implementation_kind: Literal["python_module", "prompt_template", "fixture"] = "python_module"
+    implementation_kind: Literal["python_module", "prompt_template",
+                                 "fixture", "external_agent"] = "python_module"
     module_path: Optional[str] = None     # python_module:生成的 .py 文件
     entrypoint: str = "run"               # python_module:run(message, history) -> dict
     prompt_template: Optional[str] = None # prompt_template:参数化 system prompt
     handler_ref: Optional[str] = None     # fixture/M0:内置 handler 名,非生成代码
+    adapter_name: Optional[str] = None    # external_agent:走 AgentRuntimeAdapter
+                                          # (Claude Code/opencode/Pi/ACP/A2A;详见 architecture.md)
     passed: bool = False
 
 # ---------- 构造期最终产物:ExecutableSwarm ----------
@@ -187,8 +190,9 @@ class ExecutableSwarm(BaseModel):
     plan: SwarmPlan                       # specs + dag_edges(已通过环检测)
     artifacts: dict[str, AgentArtifact]   # spec_id -> 构造凭证(passed=True)
 
-    # spec_id -> 已加载的 run(message, history) callable;由 loader 在执行前
-    # importlib 加载 artifact.module_path 填充。PrivateAttr:不进序列化、非共享默认值。
+    # spec_id -> 已加载的 run(message, history) callable;由 ArtifactLoader(§4.1)
+    # 在执行前把各形态 artifact(fixture/prompt/module/external_agent)统一加载成
+    # callable 填充。PrivateAttr:不进序列化、非共享默认值。
     _loaded: dict = PrivateAttr(default_factory=dict)
 
     def spec(self, spec_id: str) -> AgentSpec:
@@ -343,6 +347,14 @@ class FailureSignal(BaseModel):
     failure_type: FailureType             # 轴 A:决定回退阶段(§6)
     feedback: list[StructuredFeedback] = Field(default_factory=list)  # 轴 B:决定怎么改(喂给 refine)
     pass_index: int = 1
+
+# 【工程补全】ErrorAttributor 的产出、RecoveryRouter 的输入(见 §5)。
+# 与 architecture.md / frontend.md 的核心模型同名,统一为 RecoveryAction。
+class RecoveryAction(BaseModel):
+    kind: Literal["local", "upstream", "structural"]
+    target: Optional[str] = None          # local/upstream:责任 spec_id
+    subgraph: list[str] = Field(default_factory=list)   # structural:受影响子图
+    feedback: list[StructuredFeedback] = Field(default_factory=list)  # 带给重试的结构化反馈
 
 class SurfaceFailure(BaseModel):
     reason: str
@@ -512,15 +524,18 @@ def run(message: dict, history: list) -> dict:
 
 **【工程补全】** 工具映射层:把 spec 里抽象的 `"web_search"`、`"file_generator"` 映射成当前后端真正的工具定义(经 §3.6 注册表,`TOOLS = registry.schema_for(spec.tools)`)。论文 math 例子的 Pass 2 失败正是"web_search 用了 server-side 格式需要特定 SDK 处理"——所以工具配置必须由统一映射层产出,不能让模型自由发挥格式。
 
-**【工程补全】AgentArtifact 三种实现形态**:
+**【工程补全】AgentArtifact 四种实现形态**:
 
 | `implementation_kind` | 用途 | 执行方式 | 进入阶段 |
 |---|---|---|---|
 | `fixture` | M0 手工 swarm / 单测 / 错误注入 | `handler_ref` 指向内置 deterministic handler | M0 |
 | `prompt_template` | codegen 降级方案:不生成 Python 文件,只生成 system prompt + schema | 通用 `TemplateAgent.run()` 调 LLM | M2 兜底 |
 | `python_module` | 论文目标形态:每个 spec 一个生成模块 | importlib 加载 `module_path:entrypoint` | M2+ |
+| `external_agent` | control-plane 形态:节点交给外部 code agent 执行 | `adapter_name` 指向 `AgentRuntimeAdapter`(Claude Code/opencode/Pi/ACP/A2A) | M3+ |
 
 这解决 M0 的边界问题:**M0 不手写 generated agent Python 模块**,而是手写 `SwarmPlan` 配置 + `fixture` artifacts,用内置 deterministic handler 模拟 4 个 agent 的输出。这样先验证 `Coordinator` / `ContextStore` / DAG / schema 路由,不把风险提前放到 codegen。M2 才把 `fixture` 替换为 `prompt_template` 或 `python_module`。
+
+> **control-plane 说明**:`external_agent` 是 [architecture.md](architecture.md) 的核心形态——本引擎不自己实现节点,而是把受约束的节点任务委派给外部 code agent。无论哪种形态,产物都**必须过 `ConstructionVerifier`/`RuntimeGate`**:code agent 可以提出产物,但不能自己宣布成功(详见 architecture.md "责任分界")。adapter 协议细节不在本文档展开,真相源 schema 只需 `adapter_name` 这个挂载点。
 
 **【工程补全,可选旋钮:BoN 候选选优,借鉴 BoN-MAV / arXiv:2502.20379】** 默认是"生成 1 个 → 构造期验证 → 失败带反馈顺序重试(≤3 pass)",但论文 math classifier 把 3 次 pass 用满,churn 重。可改为**并行 BoN**:一次生成 N 个候选实现 → 全部过 §3.7 多 aspect 构造期验证 → **按赞成数选最优**;只有最优仍不过才进入顺序 refine 循环。这是"**token 换往返次数与首过率**"的权衡旋钮(`N` 可配,默认 1 即退回顺序模式),BoN+多验证器的扩展性优于 self-consistency。
 
@@ -616,7 +631,7 @@ def execute(swarm: ExecutableSwarm, task_input: dict) -> dict:
             try:
                 inputs = store.gather_inputs(spec_id, swarm)   # 按 io_contract 组装
             except ContractMismatch as e:                      # 缺字段/歧义 = 分解缺陷
-                RecoveryRouter.apply(Recovery(kind="structural",
+                RecoveryRouter.apply(RecoveryAction(kind="structural",
                     subgraph=affected_subgraph(spec_id, swarm)), spec_id, swarm, store)
                 break
             y = swarm.agent(spec_id)(inputs, store.history(spec_id))
@@ -640,16 +655,22 @@ def execute(swarm: ExecutableSwarm, task_input: dict) -> dict:
 
 ```python
 class ArtifactLoader:
-    def load(self, artifact: AgentArtifact):
+    def __init__(self, adapters: dict = None):
+        self.adapters = adapters or {}        # adapter_name -> AgentRuntimeAdapter
+
+    def load(self, artifact: AgentArtifact, spec: AgentSpec):
         if artifact.implementation_kind == "fixture":
             return fixture_registry[artifact.handler_ref]
         if artifact.implementation_kind == "prompt_template":
             return TemplateAgent(artifact.prompt_template).run
         if artifact.implementation_kind == "python_module":
             return import_entrypoint(artifact.module_path, artifact.entrypoint)
+        if artifact.implementation_kind == "external_agent":
+            adapter = self.adapters[artifact.adapter_name]   # Claude Code/opencode/Pi/ACP/A2A
+            return lambda message, history: adapter.invoke(spec, message, history)
 ```
 
-`Coordinator` 只看 callable,不关心 agent 是 fixture、prompt 模板还是生成模块。这样 M0/M2 能共享同一个执行期,避免为 demo 写一套、为生成代码再写一套。
+`Coordinator` 只看 callable,不关心 agent 是 fixture、prompt 模板、生成模块还是外部 code agent(adapter)。这样 M0/M2/M3 共享同一个执行期,**外部 agent 的输出和本地产物一样必须过 `RuntimeGate`**,不开后门。
 
 ### 4.2 ContextStore
 
@@ -910,14 +931,14 @@ def classify(spec_id, gate, store, swarm):
     # 1) 上游输出是否已违反其自身契约?→ upstream
     for d in deps:
         if store.has(d) and not RuntimeGate.recheck(store.get(d), swarm.spec(d)):
-            return Recovery(kind="upstream", target=d)
+            return RecoveryAction(kind="upstream", target=d)
     # 2) 失败信号指向契约/分解不匹配(下游需要的字段上游根本没产出)→ structural
     if gate.failure_type == FailureType.CONTRACT or missing_required_field(gate, store):
-        return Recovery(kind="structural", subgraph=affected_subgraph(spec_id, swarm))
+        return RecoveryAction(kind="structural", subgraph=affected_subgraph(spec_id, swarm))
     # 3) 否则本地重试(带结构化反馈 §2 StructuredFeedback),超过上限再升级
     if local_retries(spec_id) < MAX_LOCAL_RETRIES:    # 【工程补全】默认 2
-        return Recovery(kind="local", target=spec_id, feedback=gate.feedback)
-    return Recovery(kind="structural", subgraph=affected_subgraph(spec_id, swarm))
+        return RecoveryAction(kind="local", target=spec_id, feedback=gate.feedback)
+    return RecoveryAction(kind="structural", subgraph=affected_subgraph(spec_id, swarm))
 ```
 
 **【工程补全】** 重试/重跑/重规划各设上限与全局预算(总 LLM 调用数 / 时间 / 成本),触顶则"surface the failure 而非给未验证答案"——这正是论文 math swarm 的 `coordination_strategy` 写明的兜底原则。
