@@ -727,6 +727,8 @@ def gather_inputs(self, spec_id, swarm):
 
 实现:`schema 校验(机判,用 §2 `out_jsonschema()`)→ forbidden_patterns 扫描(机判)→ machine_assertions(机判优先)→ behavioral_assertions 中残留的 model_check(necessary 时走 §3.7 多 aspect 验证器面板)`,任一不过即返回 `GateResult(ok=False, ...)`。
 
+> **【M0 实现发现】`forbidden_patterns` 是"全输出字符串扫描",会误命中合法的透传字段。** 例:`spec_analyzer` 透传 `raw_signature`(值形如 `"def has_close_elements(...)"`),若给它配 `forbidden_patterns=["def "]` 就会假阳性。结论:`forbidden_patterns` 只适合"整个节点输出都不该出现某模式"的粗粒度禁止;**需要字段级排除时,改用带 `target_path` 的 `not_contains` `AssertionSpec`(machine_assertion),只扫指定字段**。规划期(Stage 2)对会透传/携带代码的节点应优先用字段级 `not_contains`,不要把代码类模式塞进全局 `forbidden_patterns`。
+
 **统一产物**:RuntimeGate 与构造期 ConstructionVerifier 都返回 §2 的 `GateResult` —— 同时带 `failure_type`(轴 A)与 `feedback: list[StructuredFeedback]`(轴 B)。**机判项失败也要产出 `StructuredFeedback`**(如 schema 校验失败 → `subtype=SCHEMA_VIOLATION`,`evidence` 指向具体字段、`expected` 取 `out_jsonschema` 该字段、`actionable_fix` 描述补法),不只机判面板。这样 rubric 反馈能一路流到 §5 的 refine,**不退化成扁平字符串**;`failure_type` 多个时按 `FAILURE_PRIORITY` 取最高者。`GateResult` 直接喂给 §5 的 `ErrorAttributor`。
 
 ### 4.4 Tool Gates(工具调用前后验证)
@@ -1249,7 +1251,11 @@ spec_analyzer = AgentSpec(
                           target_path="/raw_signature", expected="$input.raw_signature",
                           description="raw_signature 必须原样透传",
                           failure_type="contract", failure_subtype="field_mismatch")],
-        forbidden_patterns=["def ", "return ["]),   # 解析器不得自己写实现
+        # 【M0 修正】原 forbidden_patterns=["def ","return ["] 会误命中**透传的**
+        # raw_signature(其值含 "def "),见 §4.3。spec_analyzer 输出是结构化 parsed_spec
+        # + 透传签名,没有可塞代码的自由文本字段,故不配代码类 forbidden;只留粗粒度
+        # 代码围栏禁止。若某节点确有自由文本输出字段要禁代码,用字段级 not_contains。
+        forbidden_patterns=["```"]),
 )
 
 algo_planner = AgentSpec(
@@ -1357,7 +1363,9 @@ task_input = {raw_signature:"def has_close_elements(numbers: List[float], thresh
 → store.final_output(swarm) = {final_code, passed:True}   # has_close_elements 端到端 PASS
 ```
 
-**注入错误自检(M1 用)**:把 `fx_spec_analyzer` 改成不输出 `inequality_strict` → `sa1` 失败,`failure_type=spec_adherence` / `subtype=schema_violation` → `ErrorAttributor` 判 **local**(输入对、本节点输出错)→ 带 `StructuredFeedback` 本地重试。把 `fx_spec_analyzer` 改成丢掉 `raw_signature` 透传 → `code_synthesizer` 的 `gather_inputs` 抛 `ContractMismatch` → 判 **structural**。这正好覆盖 §5 的两类归因,可直接做 M1 单测。
+**注入错误自检(M1 用)**:把 `fx_spec_analyzer` 改成不输出 `inequality_strict` → `sa1` 失败,`failure_type=spec_adherence` / `subtype=schema_violation` → `ErrorAttributor` 判 **local**(输入对、本节点输出错)→ 带 `StructuredFeedback` 本地重试。
+
+> **【M0 实现修正】** 原文曾写"把 `fx_spec_analyzer` 丢掉 `raw_signature` 透传 → `code_synthesizer` 的 `gather_inputs` 抛 `ContractMismatch` → structural"。实测**不成立**:`raw_signature` 在 `spec_analyzer` 的 `required_out` 里,丢失会被 **`spec_analyzer` 自己的 gate**(schema required + `sa2` equals_input)先抓住,在源头就 `SurfaceFailure`,根本到不了下游。**真正触发下游 `gather_inputs` 的 `ContractMismatch`(structural)需要"契约错配":下游必填字段不在任何上游 `output_schema`/`required_out` 里**——即分解缺陷,而非运行期某个 agent 漏吐一个它本应吐的字段。这条已由 `test_gi08`(字段只存在于非依赖上游 → unresolved)单测覆盖。两类归因(local / structural)仍可做 M1 单测,但 structural 要用"契约错配"而非"丢透传"来构造。
 
 > 这个实例已验证现行 schema 足以表达论文 running example;唯一暴露的缺口(原始 task_input 如何到达非入口节点)已在 §4.2 收口。
 
