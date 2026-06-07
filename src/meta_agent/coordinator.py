@@ -35,13 +35,14 @@ def execute(
     task_input: dict,
     budget: Optional[Budget] = None,
     store: Optional[ContextStore] = None,
+    tool_registry=None,
 ) -> dict:
     budget = budget or Budget()
     meter = BudgetMeter()
     store = store or ContextStore()
     store.put(TASK_INPUT, task_input)
 
-    assert_valid_plan(swarm.plan)
+    assert_valid_plan(swarm.plan, tool_registry=tool_registry)
     order = topo_order(swarm.spec_ids, swarm.dag)
     policy = swarm.plan.verification_policy
     local_retries: dict[str, int] = defaultdict(int)

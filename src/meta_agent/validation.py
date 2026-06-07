@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from typing import Protocol
 
 from .schemas import (
     FailureSubtype,
@@ -17,8 +18,22 @@ from .schemas import (
 )
 
 
-def validate_plan(plan: SwarmPlan) -> list[str]:
-    """校验 DAG 边与 spec.dependencies 是否一致。"""
+class ToolRegistryLike(Protocol):
+    def validate(self, tool_names) -> list[str]:
+        ...
+
+
+_RISK_ORDER = {"low": 0, "medium": 1, "high": 2, "critical": 3}
+
+
+def _rule_applies(rule, spec) -> bool:
+    if rule.scope == "tool":
+        return bool(set(rule.applies_to_tools) & set(spec.tools))
+    return rule.scope in {"global", "domain", "swarm", "agent"}
+
+
+def validate_plan(plan: SwarmPlan, tool_registry: ToolRegistryLike | None = None) -> list[str]:
+    """校验 DAG、工具注册、policy 与 constitution 的 construction-time 约束。"""
     issues: list[str] = []
     spec_ids = [s.spec_id for s in plan.specs]
     counts = Counter(spec_ids)
@@ -44,6 +59,47 @@ def validate_plan(plan: SwarmPlan) -> list[str]:
             issues.append(
                 f"{spec.spec_id}: dependencies {sorted(declared)} != dag predecessors {sorted(expected)}"
             )
+
+        missing_required_tools = sorted(set(spec.verification_criteria.required_tools) - set(spec.tools))
+        if missing_required_tools:
+            issues.append(
+                f"{spec.spec_id}: required_tools not declared in spec.tools: {missing_required_tools}"
+            )
+
+        if spec.risk_tier in {"high", "critical"} and not (
+            plan.verification_policy.require_human_review
+            or plan.verification_policy.conservative_mode
+        ):
+            issues.append(
+                f"{spec.spec_id}: high/critical risk requires human review or conservative mode"
+            )
+
+    if plan.verification_policy.min_verifier_votes < 1:
+        issues.append("verification_policy.min_verifier_votes must be >= 1")
+
+    if tool_registry is not None:
+        for spec in plan.specs:
+            missing = tool_registry.validate(spec.tools)
+            if missing:
+                issues.append(f"{spec.spec_id}: unregistered tools: {sorted(missing)}")
+            required_missing = tool_registry.validate(spec.verification_criteria.required_tools)
+            if required_missing:
+                issues.append(
+                    f"{spec.spec_id}: unregistered required_tools: {sorted(required_missing)}"
+                )
+
+    for rule in plan.constitution_rules:
+        if rule.scope == "tool" and not rule.applies_to_tools:
+            issues.append(f"{rule.rule_id}: tool-scoped rule must declare applies_to_tools")
+        if rule.machine_assertion and rule.machine_assertion.kind == "model_check":
+            issues.append(f"{rule.rule_id}: constitution rule must be machine-checkable before M3")
+        if rule.severity != "block":
+            continue
+        for spec in plan.specs:
+            if not _rule_applies(rule, spec):
+                continue
+            if rule.description not in spec.verification_criteria.forbidden_patterns:
+                issues.append(f"{spec.spec_id}: missing blocking rule {rule.rule_id}")
     return issues
 
 
@@ -67,7 +123,7 @@ def surface_contract_issues(reason: str, issues: list[str]) -> SurfaceFailure:
     )
 
 
-def assert_valid_plan(plan: SwarmPlan) -> None:
-    issues = validate_plan(plan)
+def assert_valid_plan(plan: SwarmPlan, tool_registry: ToolRegistryLike | None = None) -> None:
+    issues = validate_plan(plan, tool_registry=tool_registry)
     if issues:
         raise surface_contract_issues("plan preflight failed", issues)

@@ -93,6 +93,19 @@ class VerificationCriteria(BaseModel):
 class VerificationPolicy(BaseModel):
     risk_tier: Literal["low", "medium", "high", "critical"] = "low"
     allow_model_verification: bool = False
+    require_human_review: bool = False
+    min_verifier_votes: int = 1
+    max_verifier_cost_tier: Literal["free", "cheap", "expensive"] = "free"
+    conservative_mode: bool = True
+
+
+class ConstitutionRule(BaseModel):
+    rule_id: str
+    scope: Literal["global", "domain", "swarm", "agent", "tool"] = "swarm"
+    severity: Literal["block", "warn", "review"] = "block"
+    description: str
+    machine_assertion: Optional[AssertionSpec] = None
+    applies_to_tools: list[str] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------- spec / DAG
@@ -120,6 +133,7 @@ class SwarmPlan(BaseModel):
     specs: list[AgentSpec]
     dag_edges: list[DagEdge] = Field(default_factory=list)
     verification_policy: VerificationPolicy = Field(default_factory=VerificationPolicy)
+    constitution_rules: list[ConstitutionRule] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------- artifacts

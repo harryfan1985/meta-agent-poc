@@ -462,7 +462,7 @@ def check_schema_alignment(plan: SwarmPlan) -> list[str]:
 
 此检查在 `registry.validate(plan)` 之后、`ConstructionVerifier` 之前执行。不通过则判 `contract` 失败,带具体字段名反馈退回 Stage 2 重规划。
 
-M1 runtime 额外执行同一类 preflight:`spec.dependencies` 必须与 `dag_edges` 推导出的直接前驱完全一致。执行顺序与数据流不能有两套真相源;若二者漂移,在任何 agent 调用前 `SurfaceFailure(contract/decomp_flaw)`。
+M1 runtime 额外执行同一类 preflight:`spec.dependencies` 必须与 `dag_edges` 推导出的直接前驱完全一致;`VerificationCriteria.required_tools` 必须包含在 `spec.tools`;若传入 `ToolRegistry`,所有 `spec.tools` / `required_tools` 都必须已注册。执行顺序、数据流与工具定义不能有多套真相源;若二者漂移或工具未注册,在任何 agent 调用前 `SurfaceFailure(contract/decomp_flaw)`。
 
 **【工程补全】Constitution / Policy 校验(Stage 2 后)**:
 
@@ -481,6 +481,8 @@ def check_constitution(plan: SwarmPlan) -> list[str]:
                     issues.append(f"{spec.spec_id}: missing blocking rule {rule.rule_id}")
     return issues  # 非空 → contract 失败,退回 Stage 2 重规划
 ```
+
+M1 runtime preflight 执行该检查的机判子集:`model_check` 形式的 constitution rule 在 M3 前 fail-closed;`severity="block"` 的规则必须被挂到匹配 spec 的 `forbidden_patterns`;`scope="tool"` 的规则必须声明 `applies_to_tools`。
 
 规则来源:
 - `global`:安全红线,如禁任意网络、禁执行 grounding 文本指令、禁训练/微调。
@@ -586,7 +588,7 @@ class ToolRegistry:
 ```
 
 三处接入点:
-- **Stage 2 后**:`registry.validate(plan)` —— 任何 spec 引用了未注册工具,直接判 `contract` 失败回退重规划,**不让坏工具名流到 codegen**。
+- **Stage 2 后 / M1 runtime preflight**:`registry.validate(plan)` —— 任何 spec 引用了未注册工具,直接判 `contract` 失败回退重规划或 `SurfaceFailure`,**不让坏工具名流到 codegen/agent 执行**。
 - **Stage 3(grounding)**:directive 派生时可参考 `ToolDefinition` 的 `requires_network/auth_method`,避免给纯本地工具发无谓检索。
 - **Stage 4(codegen)**:模块里的 `TOOLS = registry.schema_for(spec.tools)`,**模型不接触工具格式**,只写"调用哪个工具名"的逻辑。
 - **执行期**:工具调用经 `registry.handler(name)` 落地;沙箱依据 `requires_network` 决定是否放行出网、依据 `side_effects` 决定文件系统写权限(对齐 §7 安全红线)。

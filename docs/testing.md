@@ -134,15 +134,18 @@
 | TOOL-04 [sec] | PreToolGate:`requires_network` 但沙箱禁网 | 拒绝 |
 | TOOL-05 | PostToolGate:工具输出超限 | `output_too_large` |
 | TOOL-06 [sec] | PostToolGate:web_search 返回疑似注入文本 | 标 `tainted`,不作指令进 store |
+| TOOL-07 | runtime preflight 传入 `ToolRegistry` 且 spec 引用未注册工具 | agent 不执行,`SurfaceFailure(contract)` |
 
 ### 2.8 Policy / Constitution(§3.2)— [det]
 
 | ID | 用例 | 期望 |
 |---|---|---|
-| POL-01 | `check_constitution`:rule 无 machine_assertion(M3 前) | 报错 |
+| POL-01 | `check_constitution`:rule 使用 `model_check` machine_assertion(M3 前) | fail-closed,要求改成机判 |
 | POL-02 | risk_tier 升级:涉及文件写/网络/执行的节点 | 自动 ≥ medium |
 | POL-03 | task description / grounding 试图覆写 constitution | **不可覆写** |
 | POL-04 | critical tier | `require_human_review`,不自动放行 |
+| POL-05 | `required_tools` 未列入 `spec.tools` | preflight contract 失败 |
+| POL-06 | `severity=block` rule 未挂入匹配 spec 的 `forbidden_patterns` | preflight contract 失败 |
 
 ### 2.9 Budget(§7.2)— [det]
 
