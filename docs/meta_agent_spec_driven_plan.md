@@ -243,6 +243,8 @@ class EvidenceRef(BaseModel):
                          "grounding", "tool_result", "trace"]
     ref: str                              # JSON Pointer / URL / trace event id / spec clause id
     quote_or_hash: Optional[str] = None   # 短摘录或内容 hash,便于审计与去重
+    trust_level: Literal["trusted", "verified", "untrusted", "tainted"] = "untrusted"
+    taint_tags: list[str] = Field(default_factory=list)  # e.g. external_web / user_supplied / prompt_injection
 
 class Claim(BaseModel):
     claim_id: str
@@ -271,6 +273,52 @@ class GoldenVerificationCase(BaseModel):
     expected_subtypes: list[str] = Field(default_factory=list)
     evidence_refs: list[EvidenceRef] = Field(default_factory=list)
 
+class VerificationCoverage(BaseModel):
+    schema_fields_total: int = 0
+    schema_fields_checked: int = 0
+    assertions_total: int = 0
+    assertions_checked: int = 0
+    claims_total: int = 0
+    claims_verified: int = 0
+    dag_edges_total: int = 0
+    dag_edges_checked: int = 0
+    tool_calls_total: int = 0
+    tool_calls_gated: int = 0
+    regression_cases_total: int = 0
+    regression_cases_run: int = 0
+
+class VerifierDisagreement(BaseModel):
+    assertion_id: str
+    votes_for: int = 0
+    votes_against: int = 0
+    failed_aspects: list[str] = Field(default_factory=list)
+    resolution: Literal["majority", "priority",
+                        "adjudicator", "human_review"] = "majority"
+
+class VerifierHealth(BaseModel):
+    backend: str
+    version: str
+    precision: float = 0.0
+    recall: float = 0.0
+    false_accept_rate: float = 1.0
+    false_reject_rate: float = 1.0
+    last_calibrated_at: Optional[str] = None
+    enabled: bool = False
+
+class MetamorphicRelation(BaseModel):
+    relation_id: str
+    spec_id: str
+    transform: str                        # 输入变换描述/函数引用
+    expected_relation: str                # 输出关系,如 invariant/equivalent/monotonic
+
+class MutationCase(BaseModel):
+    mutation_id: str
+    spec_id: str
+    mutation_type: Literal["drop_field", "wrong_value",
+                           "forbidden_insert", "stale_source",
+                           "off_by_one", "tainted_evidence"]
+    expected_caught_by: list[str] = Field(default_factory=list)  # assertion/backend ids
+
 # 顶层类型优先级:多 aspect/多检查同时失败时,取优先级最高者做路由(见 §3.7)
 FAILURE_PRIORITY = [FailureType.CONTRACT,      # 分解/契约问题最该先处理
                     FailureType.GROUNDING,
@@ -283,6 +331,12 @@ class GateResult(BaseModel):
     ok: bool
     failure_type: Optional[FailureType] = None    # 轴 A
     feedback: list[StructuredFeedback] = Field(default_factory=list)  # 轴 B(同 FailureSignal)
+
+class ToolGateResult(BaseModel):
+    ok: bool
+    tool_name: str
+    stage: Literal["pre", "post"]         # 调用前 / 调用后
+    gate_result: GateResult
 
 class FailureSignal(BaseModel):
     spec_id: str
@@ -502,6 +556,7 @@ class ToolRegistry:
 - **Stage 3(grounding)**:directive 派生时可参考 `ToolDefinition` 的 `requires_network/auth_method`,避免给纯本地工具发无谓检索。
 - **Stage 4(codegen)**:模块里的 `TOOLS = registry.schema_for(spec.tools)`,**模型不接触工具格式**,只写"调用哪个工具名"的逻辑。
 - **执行期**:工具调用经 `registry.handler(name)` 落地;沙箱依据 `requires_network` 决定是否放行出网、依据 `side_effects` 决定文件系统写权限(对齐 §7 安全红线)。
+- **工具调用前后**:所有 handler 调用包在 §4.4 `PreToolGate` / `PostToolGate` 中,参数、权限、输出、taint、大小限制都产出 `ToolGateResult` 并写入 trace。
 
 新增/变更工具只动注册表一处,生成代码与 spec 都无需改 —— 这也是"跨模型可迁移"(§9)的工程前提之一。
 
@@ -638,7 +693,29 @@ def gather_inputs(self, spec_id, swarm):
 
 **统一产物**:RuntimeGate 与构造期 ConstructionVerifier 都返回 §2 的 `GateResult` —— 同时带 `failure_type`(轴 A)与 `feedback: list[StructuredFeedback]`(轴 B)。**机判项失败也要产出 `StructuredFeedback`**(如 schema 校验失败 → `subtype=SCHEMA_VIOLATION`,`evidence` 指向具体字段、`expected` 取 `out_jsonschema` 该字段、`actionable_fix` 描述补法),不只机判面板。这样 rubric 反馈能一路流到 §5 的 refine,**不退化成扁平字符串**;`failure_type` 多个时按 `FAILURE_PRIORITY` 取最高者。`GateResult` 直接喂给 §5 的 `ErrorAttributor`。
 
-### 4.4 Verifier Backend Stack(验证后端栈)
+### 4.4 Tool Gates(工具调用前后验证)
+
+**【工程补全,借鉴 Claude Code Hooks / Agents SDK Guardrails】** agent 输出验证不够,工具调用本身也必须经过 gate。所有工具调用经 `ToolRegistry.handler(name)` 前后分别触发:
+
+```text
+PreToolGate:
+  验证工具名已注册、参数满足工具 schema、side_effects 被 policy 允许、
+  risk_tier 足够、目标路径/网络权限合法。
+
+PostToolGate:
+  验证工具返回 schema、异常、输出大小、taint 标签、prompt injection 风险,
+  并把 tool result 标记成 EvidenceRef 或拒绝进入 ContextStore。
+```
+
+典型失败:
+- 未注册工具 / 越权工具 → `contract` + `tool_misuse`
+- 写入非授权路径 → `spec_adherence` + `tool_misuse`
+- web_search 返回疑似提示注入 → `grounding` + `irrelevant_result` 或 tainted evidence
+- 工具输出超限 → `spec_adherence` + `output_too_large`
+
+`ToolGateResult` 与 `GateResult` 同构,也要进入 trace。工具 gate 失败时,不要让 agent 看到未经脱敏/净化的原始工具输出。
+
+### 4.5 Verifier Backend Stack(验证后端栈)
 
 **【工程补全】** 新增调研文档把验证能力分成三类:LLM-as-Judge、Structured/Code verifier、Agent-as-Verifier。工程实现上不要让这些类型散落在 `RuntimeGate` 与 `ConstructionVerifier` 内部,而是统一成一个后端协议:
 
@@ -687,7 +764,7 @@ output
 - 没有足够证据时返回 `verification_status="insufficient"`,默认失败而非放行;高风险任务进入 `human_review`。
 - `StructuredFeedback.evidence` 应指向 `claim_id + evidence_ref`,而不是泛泛写"不正确"。
 
-### 4.5 Judge Bias Mitigation(模型验证偏差缓解)
+### 4.6 Judge Bias Mitigation(模型验证偏差缓解)
 
 **【工程补全,借鉴 Agent-as-Judge Survey】** 只要进入 `BaseJudgeBackend` / `AspectPanelBackend` / `AgentVerifierBackend`,必须启用以下防偏差规则:
 
@@ -704,7 +781,7 @@ output
 - 对 `critical` risk tier,模型验证的通过必须有至少一个非模型证据锚点(schema/assert/tool/result/grounding provenance)。
 - verifier prompt 必须要求输出结构化 JSON,解析失败等价于验证失败,不允许自由文本兜底放行。
 
-### 4.6 Verifier Calibration Protocol(验证器校准)
+### 4.7 Verifier Calibration Protocol(验证器校准)
 
 **【工程补全,借鉴 Promptfoo/Agent-as-Judge 元评估】** M3 上模型 verifier 前,先用 golden cases 校准:
 
@@ -713,6 +790,94 @@ output
 3. 分别跑 `BaseJudgeBackend`、`AspectPanelBackend`、`AgentVerifierBackend`,记录 precision、recall、false accept rate、false reject rate。
 4. 普通任务优化 F1;高风险任务优先压低 false accept。
 5. 校准结果写入 trace 与 release note;未达阈值的 backend 不进入 runtime hot path。
+
+### 4.8 Verification Coverage(验证覆盖率)
+
+**【工程补全】** Gate passed 只表示已执行的检查通过,不表示验证充分。每次构造期/执行期验证都应产出 §2 `VerificationCoverage`,回答"验了多少":
+
+| 覆盖项 | 含义 |
+|---|---|
+| schema coverage | `output_schema` 字段中被实际检查的比例 |
+| assertion coverage | `machine_assertions` / `behavioral_assertions` 被执行的比例 |
+| claim coverage | 输出 claim 中被 evidence 核查的比例 |
+| edge coverage | DAG 边上的字段流是否被验证 |
+| tool coverage | 工具调用是否经过 pre/post gate |
+| regression coverage | 历史失败是否有回归用例并被执行 |
+
+默认策略:
+- `critical` risk tier 不允许 `claims_verified < claims_total` 时自动放行。
+- `schema_fields_checked < schema_fields_total` 属于 verifier 实现缺陷,不能静默忽略。
+- coverage 写入 `TraceEvent.payload["coverage"]`,用于后续消融与 verifier health 分析。
+
+### 4.9 Evidence Trust / Taint Model(证据可信度与污染标记)
+
+**【工程补全,防 prompt injection / 证据污染】** `EvidenceRef` 带 `trust_level` 与 `taint_tags`:
+
+| trust_level | 语义 |
+|---|---|
+| `trusted` | 本地 spec、输入、已验证上游输出、受控测试结果 |
+| `verified` | 经独立工具或 verifier 核实的外部证据 |
+| `untrusted` | 默认外部 web、用户提供文本、未校验工具输出 |
+| `tainted` | 命中注入/过期/格式异常/来源不明等风险 |
+
+规则:
+- grounding/web_search 结果默认 `untrusted`,只能作为数据,不能作为指令。
+- `critical` claim 不能只依赖 `untrusted` 或 `tainted` evidence。
+- tainted evidence 可用于说明失败原因,但不能支持通过。
+- 进入 prompt 的外部 evidence 必须脱指令化:只放在 data/evidence 区,不得进入 system instruction 区。
+
+### 4.10 Disagreement Resolution(验证器分歧处理)
+
+多 verifier 不一致不能只记录票数,必须决策:
+
+| risk_tier | 默认分歧处理 |
+|---|---|
+| `low` | majority vote |
+| `medium` | failure priority(`contract` > `grounding` > `spec_adherence`) |
+| `high` | adjudicator verifier 复判 |
+| `critical` | human review 或 abort |
+
+`VerifierDisagreement` 写入 trace。若分歧集中在同一 aspect,说明 aspect prompt 或 evidence 不足,进入 verifier calibration queue。
+
+### 4.11 Verifier Health / Drift Monitoring(验证器健康与漂移)
+
+**【工程补全,借鉴持续校准】** 模型、prompt、工具、schema 版本都会漂移。每个 verifier backend 都维护 §2 `VerifierHealth`:
+
+- 模型版本、prompt 版本、backend 版本变化后必须重跑 golden cases。
+- `false_accept_rate` 超阈值时自动 `enabled=false`,不进入 runtime hot path。
+- `false_reject_rate` 升高时降低自动恢复力度,避免无效 retry。
+- health trend 写入 trace/metrics,供 dashboard 展示。
+
+### 4.12 Metamorphic / Mutation Testing(属性与变异测试)
+
+**Metamorphic testing** 用于检查输出是否满足不变量/等价关系,适合代码、数学、转换类任务:
+
+```text
+输入顺序变换后结果不变
+等价表达式结果一致
+边界值不崩溃
+重复执行 deterministic
+小扰动不改变核心结论
+```
+
+**Mutation testing** 用于验证 gate 本身是否能抓错:
+
+```text
+删掉 required field
+改错一个边界条件
+插入 forbidden pattern
+替换 grounding source
+制造 off-by-one
+把 evidence 标成 tainted
+```
+
+指标:
+
+```text
+mutation_score = caught_mutations / total_mutations
+```
+
+如果 mutation_score 过低,说明 assertion / verifier aspect 不够强,不能把对应 gate 当成生产可用。
 
 ---
 
@@ -903,7 +1068,9 @@ M0 注册 `jsonschema` / `field_present` / `field_absent` / `equals_input` / `co
 
 **Milestone 1 — 执行期验证 + 三级归因 + 结构化反馈(1~2 周)**
 - 实现 `RuntimeGate`(schema/forbidden/`machine_assertions` 三检,**全部机判**)+ `ErrorAttributor` + `RecoveryRouter`;`python_assert` 走最小沙箱,`model_check` 默认拒绝。
+- 实现 `PreToolGate` / `PostToolGate` 的最小机判版本:工具名、参数 schema、side_effects、输出大小、taint 标签。
 - 落地**两条轴**:`GateResult` 产出 `failure_type`(轴 A)+ `StructuredFeedback`(轴 B,先做机判项的 evidence/expected/fix);local 重试消费结构化反馈;预算触顶输出 `SurfaceFailure`。
+- 产出 `VerificationCoverage`,至少覆盖 schema/assertion/tool 三类覆盖率。
 - 用论文 §3.3 的四个归因场景做单测(local / upstream / contract / structural 各一)。验收:注入 4 类错误都能被正确分类并恢复。
 - 建 `GoldenVerificationCase` 最小集,覆盖 schema violation / forbidden hit / field mismatch / timeout,为 M3 校准留基线。
 
@@ -914,7 +1081,8 @@ M0 注册 `jsonschema` / `field_present` / `field_absent` / `equals_input` / `co
 
 **Milestone 3 — MAV/DeepVerifier 增强 + 评测、加固(2~4 周)**
 - **增强(baseline 打平后才上)**:§3.7 多 aspect 面板(模型判残差,便宜档)+ claim/evidence source-checkable 分解;§3.4 BoN 候选选优旋钮;rubric 反馈扩到语义断言;轴 B 子类随 trace 增长(§5 future-work)。
-- 启用 Judge Bias Mitigation 与 Verifier Calibration Protocol:用 golden cases 测 precision/recall/false accept/false reject,未达阈值的模型 verifier 不进入 runtime hot path。
+- 启用 Judge Bias Mitigation 与 Verifier Calibration Protocol:用 golden cases 测 precision/recall/false accept/false reject,未达阈值的模型 verifier 不进入 runtime hot path;维护 `VerifierHealth` 与 drift 监控。
+- 启用 `VerifierDisagreement` 分歧处理、evidence trust/taint policy、metamorphic testing 与 mutation testing,并报告 mutation_score。
 - 接论文 6 个 benchmark 跑分;做消融;加成本/时间预算与兜底(§7 预算模型);加沙箱加固与并发。
 - 验收:HumanEval/MBPP 达到与论文同量级(§9);**消融自检**——关掉 §3.7 面板,验证"验证仍是承重组件"的趋势。
 
@@ -954,7 +1122,12 @@ M0 注册 `jsonschema` / `field_present` / `field_absent` / `equals_input` / `co
 | 生成代码不可信 | 自动生成 + 执行 | 三档隔离沙箱、禁网、超时、资源上限(§7.1) |
 | 提示注入 | web_search / 文档 grounding 引入外部文本 | grounding 内容只作"数据"不作"指令";检索结果不进系统提示的指令区(§7.1) |
 | 无限重试/成本失控 | 闭环回退 | 统一 `Budget`/`BudgetMeter`(§7.2):各级重试上限 + 全局预算;触顶 surface failure 而非给未验证答案 |
-| 模型 judge 偏差 | 位置/长度/权威/自我增强偏差 | §4.5 Judge Bias Mitigation:swap test、匿名化、claim/evidence 验证、分歧入 trace |
+| 模型 judge 偏差 | 位置/长度/权威/自我增强偏差 | §4.6 Judge Bias Mitigation:swap test、匿名化、claim/evidence 验证、分歧入 trace |
+| 验证覆盖不足 | gate passed 但只验了局部字段/断言 | §4.8 `VerificationCoverage`:schema/assertion/claim/edge/tool/regression coverage 入 trace |
+| 工具调用绕过验证 | agent 在工具调用时越权或引入污染输出 | §4.4 PreToolGate/PostToolGate:参数、权限、side_effects、taint、输出大小双向检查 |
+| 证据污染 | 外部 web/user/tool 文本被当成可信依据或指令 | §4.9 Evidence trust/taint:外部证据默认 untrusted,tainted 不支持通过 |
+| verifier 漂移 | 模型/prompt/tool 版本变化导致 false accept 上升 | §4.11 VerifierHealth:golden cases 校准、漂移监控、超阈值自动禁用 |
+| gate 过弱 | assertion 看似存在但抓不住典型错误 | §4.12 mutation testing:用 mutation_score 评估 gate 强度 |
 | policy 只写不执行 | 安全红线停留在文档层 | §2 `ConstitutionRule` + §3.2 `check_constitution(plan)`,把红线变成 planner/verifier 消费的 spec |
 | 外部框架锁死核心 | Guardrails/PydanticAI/Promptfoo 等能力诱人但重 | §7.5:只作为 adapter/backend,不成为 spec 真相源或 runtime hot path 默认依赖 |
 | 弱于专家手工系统 | **【论文 Limitations】** 全自动 vs 专家先验 | 预留"轻量领域先验"注入点(论文 future work 方向):允许人工为特定 domain 追加 spec 模板/断言 |
