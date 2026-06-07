@@ -960,6 +960,10 @@ def classify(spec_id, gate, store, swarm):
 
 **【工程补全】** 重试/重跑/重规划各设上限与全局预算(总 LLM 调用数 / 时间 / 成本),触顶则"surface the failure 而非给未验证答案"——这正是论文 math swarm 的 `coordination_strategy` 写明的兜底原则。
 
+> **【M1 实现发现:upstream 归因需要模型判,纯机判抓不住】** 上面 classify 第 1 步"上游输出违反其自身契约 → upstream"在**全量 gate 的流水线 + 纯机判**下**几乎不可达**:任何"坏到 recheck 不过"的上游输出,早在它自己 `put` 时的 gate 就被拦下(判 local),根本不会留到下游来归因。而论文真正的 upstream 案例(analyst 用了 `≤`、synthesizer 据此出错)是**上游输出"过了自己的 gate 但语义错"**——机判检测不到"语义错",只有下游失败时回看才暴露。
+>
+> 结论:**机判版 upstream 归因只覆盖"上游输出自身非法";"上游过 gate 但语义错"这类必须靠模型判**(§3.7 aspect 面板 / §4.5 claim-evidence),据下游失败证据反向定位责任上游。因此 upstream 的**真实恢复路径属 M3**;M0/M1 在全机判下主要走 local 与 structural 两条。这印证了把"模型判残差"留到 M3 的分档是必要的,而非可选装饰。(实现中 M1 的 coordinator upstream 应用段已标 `pragma: no cover` 待 M3。)
+
 **【工程补全,future-work,借鉴 DeepVerifier 的自动构建分类法】** 轴 B 的 `FailureSubtype` 初版为手工枚举;后续可从 trace(§7 可观测)里记录的失败聚类,**把高频新失败提炼成新子类 + 新 rubric 模板**,让分类法随运行增长。注意:这里的"进化"**纯粹在 spec/rubric 层**(增删枚举与文本模板),**不训练、不微调任何模型**(§7 非目标)。
 
 ---
@@ -1123,7 +1127,7 @@ M0 注册 `jsonschema` / `field_present` / `field_absent` / `equals_input` / `co
 - 实现 `PreToolGate` / `PostToolGate` 的最小机判版本:工具名、参数 schema、side_effects、输出大小、taint 标签。
 - 落地**两条轴**:`GateResult` 产出 `failure_type`(轴 A)+ `StructuredFeedback`(轴 B,先做机判项的 evidence/expected/fix);local 重试消费结构化反馈;预算触顶输出 `SurfaceFailure`。
 - 产出 `VerificationCoverage`,至少覆盖 schema/assertion/tool 三类覆盖率。
-- 用论文 §3.3 的四个归因场景做单测(local / upstream / contract / structural 各一)。验收:注入 4 类错误都能被正确分类并恢复。
+- 用论文 §3.3 的四个归因场景做单测(local / upstream / contract / structural 各一)。验收:四类都能被 `classify` **正确分类**;**local 与 structural 走完整 E2E 恢复**,**upstream 在 M1 仅单测 `classify`**(E2E 的 upstream 恢复需模型判,属 M3——见 §5「M1 实现发现」)。
 - 建 `GoldenVerificationCase` 最小集,覆盖 schema violation / forbidden hit / field mismatch / timeout,为 M3 校准留基线。
 
 **Milestone 2 — 构造期全流水线 + 工具注册表(2~3 周)**
