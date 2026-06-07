@@ -30,6 +30,12 @@ trace / replay
 User / Product Request
         │
         ▼
+Task Contract Authoring Layer(optional)
+  ├─ agent-spec Task Contract
+  ├─ spec-kit / OpenSpec-style authoring
+  └─ Human review / acceptance criteria
+        │
+        ▼
 Meta-Agent Engine
   ├─ IntentParser
   ├─ SwarmPlanner
@@ -58,6 +64,18 @@ Agent Runtime Adapters
         ▼
 Workspace / Repo / Tools / Sandbox / Tests
 ```
+
+`Task Contract Authoring Layer` 是可选前门,不是核心 runtime。它负责把用户需求提前结构化为人可审阅的 task contract;Meta-Agent Engine 再把 contract 编译成机器可执行的 `AgentSpec DAG`。例如 agent-spec 的四块 contract 可这样映射:
+
+| agent-spec Task Contract | Meta-Agent Engine |
+|---|---|
+| `Intent` | `ParsedIntent` / `SwarmPlan.summary` |
+| `Decisions` | `SwarmPlanner` constraints / `ConstitutionRule` |
+| `Boundaries` | `allowed_paths` / `forbidden_patterns` / external_agent diff gate |
+| `Completion Criteria` | `TestCase` / `GoldenVerificationCase` / `machine_assertions` |
+| `lifecycle` / `guard` report | 外部 evidence / CI gate / reviewer summary |
+
+边界很重要:`agent-spec` 可以帮助写清任务契约、绑定测试、守 change boundaries,但不能替代本项目的 `AgentSpec` 真相源、`Coordinator`、`RuntimeGate`、错误归因和恢复路由。
 
 关键边界:
 

@@ -45,6 +45,24 @@
 
 ---
 
+## 1.1 TaskContract 前置层(agent-spec 等)
+
+**【工程补全】** `agent-spec`、spec-kit、OpenSpec 这类工具可作为 `IntentParser` 上游的 **TaskContract Authoring Layer**,但不能替代 §2 的 `AgentSpec` 真相源。它们的产物面向人审、code agent prompt 和 task-level CI gate;本项目的 `AgentSpec / IOContract / VerificationCriteria / GateResult` 面向确定性 runtime。
+
+推荐映射:
+
+| TaskContract 字段 | 编译到本项目 |
+|---|---|
+| Intent | `ParsedIntent` / `SwarmPlan.summary` |
+| Decisions | `SwarmPlanner` constraints / `ConstitutionRule` |
+| Boundaries / Allowed Changes / Forbidden | `allowed_paths` / `forbidden_patterns` / `CliCodeAgentAdapterBase` diff gate |
+| Completion Criteria / BDD scenarios / Test selectors | `TestCase` / `GoldenVerificationCase` / `AssertionSpec` |
+| lifecycle / guard report | 外部 evidence,可进入构造期或执行期 verifier backend |
+
+原则:TaskContract 可以提高**写 spec 前的需求清晰度**和**确定性验收证据**,但进入 runtime 前必须编译成 §2 的 Pydantic schema。不要把 Markdown/DSL contract 直接当 `AgentSpec` 消费。
+
+---
+
 ## 2. 核心数据模型
 
 **【论文】** 附录 A/B/C 给出了 `ParsedIntent`、`SwarmPlan`、`AgentSpec`(含 `io_contract` 与 `verification_criteria`)的确切字段。下面用 Pydantic 还原为可执行 schema,这是整个系统的"spec 真相源"。
