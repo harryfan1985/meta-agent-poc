@@ -1015,7 +1015,7 @@ def classify(spec_id, gate, store, swarm):
 | 不可信产物 | code agent 的输出(代码、diff、测试结论)默认 `untrusted`(§4.9),**必须过 `RuntimeGate`/`ConstructionVerifier` 才传播**;它不能自宣成功(architecture.md "责任分界") |
 | 审计 | adapter 的每次调用、工具使用、文件改动都进 `TraceEvent`,可回放 |
 
-一句话:`python_module` 靠**沙箱隔离**防御,`external_agent` 靠**能力最小化 + 一次性 worktree + 产物过 gate**防御;两者都遵守"未验证不传播"。
+一句话:`python_module` 靠**沙箱隔离**防御,`external_agent` 靠**能力最小化 + 一次性 worktree + 产物过 gate**防御;两者都遵守"未验证不传播"。其中 worktree/diff/timeout/trace 这些**无产品语义的执行基座**应由 adapter 公共基类承载(`CliCodeAgentAdapterBase`),provider-specific 的 CLI/权限/事件解析留在各自 adapter——详见 [architecture.md](architecture.md) "ClaudeCodeAdapter 与 OpenCodeAdapter 的共享边界"。
 
 ### 7.2 统一预算模型
 

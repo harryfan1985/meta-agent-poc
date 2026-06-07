@@ -276,6 +276,8 @@ if provider == "opencode": ...
 
 如果未来某个 code agent 稳定暴露 ACP/A2A server,可以再通过 `ACPAgentAdapter` 或 `A2AAgentAdapter` 收敛 transport 层。但即便 transport 收敛,安装、认证、权限、工具、事件细节仍应保留 provider profile,不能进入核心 schema。
 
+> `CliCodeAgentAdapterBase` 承载的 worktree / diff / timeout / 产物过 gate 正是设计文档 **§7.1 `external_agent` 威胁模型**的落地:外部 code agent 直接写 repo,靠"能力最小化 + 一次性 worktree + 产物默认 untrusted 必过 gate"防御,而非沙箱隔离。
+
 ## 接口协议选型
 
 没有一个业界协议能完整覆盖本项目的内部上下文接口。推荐采用:
