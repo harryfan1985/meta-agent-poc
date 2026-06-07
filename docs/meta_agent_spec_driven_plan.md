@@ -30,6 +30,19 @@
 | 三级错误归因 | `ErrorAttributor` + `RecoveryRouter` | 分类 local / upstream / structural 并选恢复策略 |
 | Generate→Verify→Attribute→Refine | 贯穿上述模块的统一闭环 | — |
 
+**【工程补全】本方案在论文组件之外增补的引擎级组件**(详见对应章节):
+
+| 工程组件 | 职责 | 章节 |
+|---|---|---|
+| `ToolRegistry` | 抽象工具名 → 后端真实定义的单一出口,杜绝工具格式自由发挥 | §3.6 |
+| `ArtifactLoader` | 把四形态 `AgentArtifact`(fixture/prompt/module/external_agent)统一加载成 callable | §4.1 |
+| `VerificationPolicy` + `ConstitutionRule` | 按 `risk_tier` 决定验证强度;不可覆写的安全红线进 spec | §2 / §3.2 |
+| `VerifierBackend` 栈 | 机判/模型判/agent 判统一后端协议,按里程碑分档上线 | §4.5 |
+| `AssertionSpec` | 把自然语言断言编译成可机判断言(M0/M1 主力) | §2 / §3.5 |
+| `Claim` + `EvidenceRef` | 模型判残差:抽 claim 逐条对证据核查,而非 judge 整段 | §2 / §4.5 |
+| `AgentRuntimeAdapter` | control plane:把节点委派给外部 code agent(Claude Code/opencode/Pi),产物仍过 gate | architecture.md |
+| `BudgetMeter` / `TraceEvent` / `SurfaceFailure` | 预算兜底、可观测、失败上浮 | §7.2 / §7.3 |
+
 ---
 
 ## 2. 核心数据模型
@@ -700,6 +713,8 @@ def gather_inputs(self, spec_id, swarm):
     return message
 ```
 
+**原始 task_input 的接线**(【工程补全】,由附录 A 实例暴露的设计点):`gather_inputs` 只从直接依赖取字段,但 `raw_signature` 这类**原始任务输入**不由任何 agent 产出。约定:`execute()` 启动时把 `task_input` 以**保留虚拟源 `__task_input__`** 登记进 `ContextStore`,并视为所有**入口节点**(入度 0)的隐式依赖;非入口节点若要用原始输入,必须由某个上游 agent 在其 `output_schema` 里**显式透传**(如 `spec_analyzer` 把 `raw_signature` 原样放进输出)。这样 DAG 仍是唯一数据流真相,task_input 也可追溯,不会变成隐式全局变量。
+
 设计决策(均为 **【工程补全】**):
 - **按字段名匹配**:依赖 Stage 2 规划时就让上下游 schema 字段名对齐(契约可追溯性);名字不齐属于规划缺陷,应在构造期就被 `contract` 验证拦下,而非执行期硬猜。
 - **缺字段 / 歧义 → 不静默处理**:任一字段无来源或有多个来源,直接抛 `ContractMismatch`。它在 §5 归因里映射为 `missing_required_field(...)→ structural`(分解本身有缺陷),而不是让 agent 拿着残缺/猜测的输入去跑。
@@ -1082,7 +1097,7 @@ M0 注册 `jsonschema` / `field_present` / `field_absent` / `equals_input` / `co
 
 - **Milestone 0 — 骨架与 schema(1~2 周)**  
   - 落地 §2 全部 Pydantic 模型(含**可机判的 `IOContract`/`FieldSpec`/`out_jsonschema`**、统一 `GateResult`);搭 `Coordinator` + `ContextStore`(含 `gather_inputs` §4.2)+ 拓扑执行 + DAG 环检测。  
-  - **明确"手写 swarm"的含义**:手工构造 `SwarmPlan` 的 JSON/YAML 配置(含 4 个 `AgentSpec` + DAG 边 + I/O 契约 + 验证标准)和 `implementation_kind="fixture"` 的 `AgentArtifact`,然后让 `ArtifactLoader` + `Coordinator` + `ContextStore` 加载并执行,而非手写 generated agent Python 模块。验收:`has_close_elements` 例子端到端 PASS。  
+  - **明确"手写 swarm"的含义**:手工构造 `SwarmPlan` 的 JSON/YAML 配置(含 4 个 `AgentSpec` + DAG 边 + I/O 契约 + 验证标准)和 `implementation_kind="fixture"` 的 `AgentArtifact`,然后让 `ArtifactLoader` + `Coordinator` + `ContextStore` 加载并执行,而非手写 generated agent Python 模块。**完整可抄的种子见[附录 A](#附录-arunning-example--function-completion-4-agent-swarm)**(4 个 AgentSpec + DAG + fixture + gate 验收已写全)。验收:`has_close_elements` 例子端到端 PASS。  
   - **推荐初始包结构**:`src/meta_agent/schemas.py`(§2)、`dag.py`(环检测/拓扑序)、`artifacts.py`(`ArtifactLoader`)、`context.py`、`coordinator.py`、`runtime_gate.py`(先放 schema/pattern/machine assertion 机判骨架)、`verification_registry.py`、`fixtures/function_completion.py`。测试对应放在 `tests/test_*.py`。
   - **M0 明确不做**:不接真实 LLM、不做 Stage 1→5 自动构造、不跑模型 verifier、不实现恢复路由。M0 只证明"合法 ExecutableSwarm 可按 DAG 和契约稳定执行"。  
   - **快速原型:codegen 可行性验证** —— 手写 10 个 `AgentSpec`(覆盖 code/math/reasoning),测试自动 codegen 的首次成功率。如果 <50%,考虑降级方案(YAML 配置替代 Python 代码生成)。
@@ -1152,6 +1167,174 @@ M0 注册 `jsonschema` / `field_present` / `field_absent` / `equals_input` / `co
 | policy 只写不执行 | 安全红线停留在文档层 | §2 `ConstitutionRule` + §3.2 `check_constitution(plan)`,把红线变成 planner/verifier 消费的 spec |
 | 外部框架锁死核心 | Guardrails/PydanticAI/Promptfoo 等能力诱人但重 | §7.5:只作为 adapter/backend,不成为 spec 真相源或 runtime hot path 默认依赖 |
 | 弱于专家手工系统 | **【论文 Limitations】** 全自动 vs 专家先验 | 预留"轻量领域先验"注入点(论文 future work 方向):允许人工为特定 domain 追加 spec 模板/断言 |
+
+---
+
+## 附录 A:Running Example —— function-completion 4-agent swarm
+
+**【工程补全】** 把论文 function-completion 例子(HumanEval `has_close_elements(numbers, threshold)`)用现行 schema **完整实例化**一次。目的有三:① 压测 §2 schema 是否够用(本附录就暴露了"task_input 接线"这个设计点,已回填 §4.2);② 给 **M0** 一份可直接抄的种子(M0 = 手写此 `SwarmPlan` + `fixture` artifacts 跑通执行期);③ 让满纸抽象第一次落地。
+
+### A.1 DAG 与契约可追溯性
+
+```text
+__task_input__ {raw_signature, docstring}
+        │(入口隐式依赖)
+        ▼
+  spec_analyzer ──────────────┐──────────────┐
+   out: parsed_spec,          │              │
+        raw_signature(透传)   ▼              ▼
+                         algo_planner   code_synthesizer ──► code_verifier
+                          out: approach   out: candidate_code   out: final_code, passed
+```
+
+边集(每条下游输入字段都能在某上游输出找到来源,满足 §3.2):
+
+```python
+dag_edges = [
+    DagEdge(from_spec="spec_analyzer",   to_spec="algo_planner"),
+    DagEdge(from_spec="spec_analyzer",   to_spec="code_synthesizer"),
+    DagEdge(from_spec="algo_planner",    to_spec="code_synthesizer"),
+    DagEdge(from_spec="spec_analyzer",   to_spec="code_verifier"),
+    DagEdge(from_spec="code_synthesizer",to_spec="code_verifier"),
+]
+```
+
+### A.2 四个 AgentSpec(节选关键字段)
+
+```python
+spec_analyzer = AgentSpec(
+    spec_id="spec_analyzer", role="把签名+docstring解析成结构化规格,不写代码",
+    dependencies=[], risk_tier="low",
+    io_contract=IOContract(
+        input_schema={"raw_signature": FieldSpec(type="string", description="函数签名"),
+                      "docstring":     FieldSpec(type="string", description="自然语言描述")},
+        output_schema={"raw_signature": FieldSpec(type="string", description="原样透传给下游"),
+                       "parsed_spec":   FieldSpec(type="object", description="edge_cases/约束/严格不等标记")},
+        required_in=["raw_signature", "docstring"],
+        required_out=["raw_signature", "parsed_spec"],
+        description="signature+docstring → 结构化 spec"),
+    verification_criteria=VerificationCriteria(
+        behavioral_assertions=["必须标注阈值比较是否为严格不等(< vs <=)"],
+        machine_assertions=[
+            AssertionSpec(assertion_id="sa1", kind="field_present",
+                          target_path="/parsed_spec/inequality_strict",
+                          description="必须显式给出严格不等标记",
+                          failure_subtype="schema_violation"),
+            AssertionSpec(assertion_id="sa2", kind="equals_input",
+                          target_path="/raw_signature", expected="$input.raw_signature",
+                          description="raw_signature 必须原样透传",
+                          failure_type="contract", failure_subtype="field_mismatch")],
+        forbidden_patterns=["def ", "return ["]),   # 解析器不得自己写实现
+)
+
+algo_planner = AgentSpec(
+    spec_id="algo_planner", role="据 parsed_spec 选算法与遍历顺序,不写最终代码",
+    dependencies=["spec_analyzer"], risk_tier="low",
+    io_contract=IOContract(
+        input_schema={"parsed_spec": FieldSpec(type="object", description="来自 analyst")},
+        output_schema={"approach": FieldSpec(type="object",
+                          description="algorithm + ordering_note + 是否保配对顺序")},
+        required_in=["parsed_spec"], required_out=["approach"],
+        description="parsed_spec → approach"),
+    verification_criteria=VerificationCriteria(
+        behavioral_assertions=["所选算法不得破坏阈值配对的成立条件"],
+        machine_assertions=[AssertionSpec(assertion_id="ap1", kind="field_present",
+                          target_path="/approach/algorithm", description="必须给出算法选择")],
+        forbidden_patterns=["import "]),
+)
+
+code_synthesizer = AgentSpec(
+    spec_id="code_synthesizer", role="据 spec+approach 写候选实现",
+    dependencies=["spec_analyzer", "algo_planner"], risk_tier="medium",
+    io_contract=IOContract(
+        input_schema={"raw_signature": FieldSpec(type="string", description="透传自 analyst"),
+                      "parsed_spec":   FieldSpec(type="object", description="来自 analyst"),
+                      "approach":      FieldSpec(type="object", description="来自 planner")},
+        output_schema={"candidate_code": FieldSpec(type="string", description="完整函数实现")},
+        required_in=["raw_signature", "parsed_spec", "approach"],
+        required_out=["candidate_code"],
+        description="spec+approach → candidate_code"),
+    verification_criteria=VerificationCriteria(
+        behavioral_assertions=["实现必须使用 analyst 标注的严格不等语义"],
+        machine_assertions=[
+            AssertionSpec(assertion_id="cs1", kind="regex_match",
+                          target_path="/candidate_code", expression=r"def\s+has_close_elements",
+                          description="必须定义目标函数",
+                          failure_subtype="schema_violation")],
+        forbidden_patterns=["import os", "subprocess", "open("]),   # §7.1 安全红线
+)
+
+code_verifier = AgentSpec(
+    spec_id="code_verifier", role="对照 spec 校验候选代码并定稿(verifier/formatter)",
+    dependencies=["spec_analyzer", "code_synthesizer"], risk_tier="medium",
+    io_contract=IOContract(
+        input_schema={"candidate_code": FieldSpec(type="string", description="来自 synthesizer"),
+                      "raw_signature":  FieldSpec(type="string", description="透传自 analyst"),
+                      "parsed_spec":    FieldSpec(type="object", description="来自 analyst")},
+        output_schema={"final_code": FieldSpec(type="string", description="定稿代码"),
+                       "passed":     FieldSpec(type="boolean", description="是否通过自检")},
+        required_in=["candidate_code", "parsed_spec"], required_out=["final_code", "passed"],
+        description="candidate_code+spec → final_code"),
+    verification_criteria=VerificationCriteria(
+        behavioral_assertions=["final_code 行为必须满足 parsed_spec 的全部 edge_cases"],
+        machine_assertions=[
+            AssertionSpec(assertion_id="cv1", kind="python_assert",
+                          target_path="/final_code",
+                          expression="'def has_close_elements' in output['final_code']",
+                          description="定稿必须含目标函数(沙箱内只读判定)",
+                          failure_subtype="schema_violation")],
+        forbidden_patterns=["import os", "subprocess"]),
+)
+```
+
+### A.3 SwarmPlan + M0 fixture artifacts
+
+```python
+plan = SwarmPlan(
+    swarm_name="humaneval_has_close_elements",
+    summary="signature→spec→approach→code→verified code 的 4 节点严格拓扑序",
+    coordination_strategy="严格串行:analyst → planner → synthesizer → verifier",
+    specs=[spec_analyzer, algo_planner, code_synthesizer, code_verifier],
+    dag_edges=dag_edges,
+    verification_policy=VerificationPolicy(risk_tier="medium",
+        allow_model_verification=False),   # M0/M1:全机判,不开模型判
+)
+
+# M0:不生成 Python 模块,用 fixture(确定性 handler)模拟四个 agent 的输出
+artifacts = {
+    "spec_analyzer":    AgentArtifact(spec_id="spec_analyzer",    implementation_kind="fixture",
+                                      handler_ref="fx_spec_analyzer",    passed=True),
+    "algo_planner":     AgentArtifact(spec_id="algo_planner",     implementation_kind="fixture",
+                                      handler_ref="fx_algo_planner",     passed=True),
+    "code_synthesizer": AgentArtifact(spec_id="code_synthesizer", implementation_kind="fixture",
+                                      handler_ref="fx_code_synthesizer", passed=True),
+    "code_verifier":    AgentArtifact(spec_id="code_verifier",    implementation_kind="fixture",
+                                      handler_ref="fx_code_verifier",    passed=True),
+}
+swarm = ExecutableSwarm(plan=plan, artifacts=artifacts)
+# ArtifactLoader(§4.1)把 fixture 装配成 callable 填进 swarm._loaded
+```
+
+### A.4 一次执行的 gate 验收(端到端)
+
+> 纯机判项(`sa1/sa2/ap1/cs1` + forbidden 扫描)M0 即可跑;`cv1` 是 `python_assert`,按 §4.5 属 M1 沙箱后端——M0 可临时降级为 `contains`/`regex_match` 等价检查,M1 再换回 `python_assert`。
+
+```text
+task_input = {raw_signature:"def has_close_elements(numbers: List[float], threshold: float) -> bool",
+              docstring:"...任意两数差小于 threshold 则 True..."}
+
+1. spec_analyzer  ← __task_input__         gate: sa1(严格不等标记present)✓ sa2(raw_signature透传)✓
+2. algo_planner   ← parsed_spec            gate: ap1(algorithm present)✓
+3. code_synthesizer ← raw_signature+parsed_spec+approach
+                                           gate: cs1(def 正则)✓ forbidden(无 import os)✓
+4. code_verifier  ← candidate_code+parsed_spec
+                                           gate: cv1(python_assert 沙箱)✓ → final_code, passed=True
+→ store.final_output(swarm) = {final_code, passed:True}   # has_close_elements 端到端 PASS
+```
+
+**注入错误自检(M1 用)**:把 `fx_spec_analyzer` 改成不输出 `inequality_strict` → `sa1` 失败,`failure_type=spec_adherence` / `subtype=schema_violation` → `ErrorAttributor` 判 **local**(输入对、本节点输出错)→ 带 `StructuredFeedback` 本地重试。把 `fx_spec_analyzer` 改成丢掉 `raw_signature` 透传 → `code_synthesizer` 的 `gather_inputs` 抛 `ContractMismatch` → 判 **structural**。这正好覆盖 §5 的两类归因,可直接做 M1 单测。
+
+> 这个实例已验证现行 schema 足以表达论文 running example;唯一暴露的缺口(原始 task_input 如何到达非入口节点)已在 §4.2 收口。
 
 ---
 
