@@ -133,9 +133,9 @@ LangGraph / AutoGen / CrewAI / MetaGPT 都能跑多 agent 图,诱惑很大。但
 
 ---
 
-## spec 编写 / 对齐层(如 OpenSpec):另一层,不作核心
+## spec 编写 / 对齐层(spec-kit / OpenSpec 类):另一层,不作核心
 
-[OpenSpec](https://github.com/Fission-AI/OpenSpec)(TS/npm CLI)这类"spec-driven 开发工作流"和本项目同名"spec-driven",但**海拔不同**,不能用于 AgentSpec 核心:
+[OpenSpec](https://github.com/Fission-AI/OpenSpec)(TS/npm)、[GitHub spec-kit](https://github.com/github/spec-kit)(Python CLI `specify`)这类"spec-driven 开发工作流"和本项目同名"spec-driven",但**海拔不同**,不能用于 AgentSpec 核心:
 
 | 维度 | OpenSpec 的 spec | 本项目 AgentSpec(§2) |
 |---|---|---|
@@ -147,9 +147,15 @@ LangGraph / AutoGen / CrewAI / MetaGPT 都能跑多 agent 图,诱惑很大。但
 
 **为何 AgentSpec 核心不重用**:OpenSpec"spec = Markdown 散文"正是本项目刻意抛弃的形态——`IOContract` 已从 `"type -- desc"` 自由串升级为可机判 `FieldSpec`(就是为了让 `RuntimeGate` 机判),用 Markdown 当 spec 会推翻"机判优先"与"spec 是机器真相源"(conception 原则 1)。
 
-**唯一可能(可选、低优先、是约定非库)**:OpenSpec 可坐在 **IntentParser 上游**当人机对齐"前门",把自然语言任务 + 约束在编译成 AgentSpec DAG **之前**结构化。但 PoC 不需要(M0–M2 无关),且跨语言(TS↔Python);真要做人审/对齐,frontend.md 的 cockpit + AG-UI 更贴合本项目的 trace/gate 体系。
+**唯一可能(可选、低优先、是约定非库)**:可坐在 **IntentParser 上游**当人机对齐"前门",把自然语言任务 + 约束在编译成 AgentSpec DAG **之前**结构化。但 PoC 不需要(M0–M2 无关);真要做人审/对齐,frontend.md 的 cockpit + AG-UI 更贴合本项目的 trace/gate 体系。
 
-> 通用判据:凡"spec = 给人/LLM 读的散文、写码前对齐"的工具(OpenSpec 类)→ 至多 IntentParser 上游约定;**绝不**进入 AgentSpec 真相源。AgentSpec 必须可机判、由 runtime 消费。
+**spec-kit vs OpenSpec(若选前门,spec-kit 更优)**:
+- **同语言**:spec-kit 是 Python 3.11+/uv,没有 OpenSpec 的 TS↔Python 摩擦;GitHub 背书、30+ agent 生态 → 作可选前门的**首选候选**。
+- **constitution 撞名,别混**:spec-kit 有 `.specify/memory/constitution.md`(散文,给 LLM 读);本项目 `ConstitutionRule`(§2)是**可机判 `machine_assertion`、gate/planner 强制、不可覆写**。概念收敛是好事,但实现海拔不同,**不可互替**。
+- **"executable spec"是话术**:spec-kit 宣称 spec "executable",实为 Markdown 经 prompt 喂 agent,**不被机器执行**;本项目是字面机器执行(`RuntimeGate` 跑 `out_jsonschema()`/`AssertionSpec`)。**共享措辞、含义相反**,勿据此误判可重用。
+- **互补而非替代**:spec-kit 的 `/implement` 把活交给 Copilot/Claude Code,但**无运行时验证/gate/归因/恢复**——这恰是本项目差异化。理论上 spec-kit 当前门 + 本引擎当受验证执行控制面可互补,但集成成本高、PoC 无关。
+
+> 通用判据:凡"spec = 给人/LLM 读的散文、写码前对齐"的工具(spec-kit / OpenSpec 类)→ 至多 IntentParser 上游约定;**绝不**进入 AgentSpec 真相源。AgentSpec 必须可机判、由 runtime 消费。"executable specification"措辞在这类工具里指"喂 agent 生成代码",与本项目"被 runtime 机器执行"含义相反。
 
 ---
 
