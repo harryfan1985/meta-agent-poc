@@ -1033,6 +1033,8 @@ def classify(spec_id, gate, store, swarm):
 
 一句话:`python_module` 靠**沙箱隔离**防御,`external_agent` 靠**能力最小化 + 一次性 worktree + 产物过 gate**防御;两者都遵守"未验证不传播"。其中 worktree/diff/timeout/trace 这些**无产品语义的执行基座**应由 adapter 公共基类承载(`CliCodeAgentAdapterBase`),provider-specific 的 CLI/权限/事件解析留在各自 adapter——详见 [architecture.md](architecture.md) "ClaudeCodeAdapter 与 OpenCodeAdapter 的共享边界"。
 
+M1/M2 先落地 provider-neutral `CliCodeAgentAdapterBase`:在临时 workspace 副本中运行外部 agent hook,捕获 changed paths,按 `allowed_paths` 拒绝越界 diff,限制输出大小,并把所有失败包装为 typed `SurfaceFailure`。Claude Code / OpenCode 只需实现 `run_agent(worktree, spec, message, history)`。
+
 ### 7.2 统一预算模型
 
 各级重试上限散落多处,这里收成一个对象,贯穿构造期与执行期,触顶即 `surface failure`(§5)。

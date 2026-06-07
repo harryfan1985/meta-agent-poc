@@ -135,6 +135,7 @@
 | TOOL-05 | PostToolGate:工具输出超限 | `output_too_large` |
 | TOOL-06 [sec] | PostToolGate:web_search 返回疑似注入文本 | 标 `tainted`,不作指令进 store |
 | TOOL-07 | runtime preflight 传入 `ToolRegistry` 且 spec 引用未注册工具 | agent 不执行,`SurfaceFailure(contract)` |
+| TOOL-08 | `ToolExecutor.invoke()` | pre gate 先于 handler,post gate 拒绝污染结果,handler 异常 typed surface |
 
 ### 2.8 Policy / Constitution(§3.2)— [det]
 

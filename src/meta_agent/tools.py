@@ -7,7 +7,7 @@ PreToolGate / PostToolGate:工具调用前后机判(名/参数 schema/side_effec
 from __future__ import annotations
 
 import json
-from typing import Iterable, Optional
+from typing import Callable, Iterable, Optional
 
 from jsonschema import Draft202012Validator
 
@@ -16,6 +16,7 @@ from .schemas import (
     FailureType,
     GateResult,
     StructuredFeedback,
+    SurfaceFailure,
     ToolDefinition,
     ToolGateResult,
     VerificationPolicy,
@@ -23,8 +24,13 @@ from .schemas import (
 
 
 class ToolRegistry:
-    def __init__(self, tools: Optional[Iterable[ToolDefinition]] = None):
+    def __init__(
+        self,
+        tools: Optional[Iterable[ToolDefinition]] = None,
+        handlers: Optional[dict[str, Callable]] = None,
+    ):
         self._tools: dict[str, ToolDefinition] = {t.name: t for t in (tools or [])}
+        self._handlers = handlers or {}
 
     def register(self, tool: ToolDefinition) -> None:
         self._tools[tool.name] = tool
@@ -34,6 +40,15 @@ class ToolRegistry:
 
     def get(self, name: str) -> ToolDefinition:
         return self._tools[name]
+
+    def register_handler(self, handler_ref: str, handler: Callable) -> None:
+        self._handlers[handler_ref] = handler
+
+    def handler(self, name: str) -> Callable:
+        tool = self.get(name)
+        if tool.handler_ref not in self._handlers:
+            raise KeyError(f"handler_ref not registered for {name!r}: {tool.handler_ref!r}")
+        return self._handlers[tool.handler_ref]
 
     def schema_for(self, names: list[str]) -> list[dict]:
         return [self._tools[n].backend_schema for n in names]
@@ -127,3 +142,62 @@ class PostToolGate:
             ok=ok, tool_name=tool_name, stage="post",
             gate_result=GateResult(ok=ok, failure_type=None if ok else ftype, feedback=fb),
         )
+
+
+class ToolExecutor:
+    """受控工具执行入口:handler 调用前后强制走 gate。"""
+
+    def __init__(
+        self,
+        registry: ToolRegistry,
+        policy: Optional[VerificationPolicy] = None,
+        allowed_side_effects: Optional[set[str]] = None,
+        allow_network: bool = False,
+        max_output_chars: int = 100_000,
+    ):
+        self.registry = registry
+        self.policy = policy
+        self.allowed_side_effects = allowed_side_effects
+        self.allow_network = allow_network
+        self.max_output_chars = max_output_chars
+
+    def invoke(self, tool_name: str, params: dict, taint_tags: Optional[list[str]] = None):
+        pre = PreToolGate.check(
+            tool_name,
+            params,
+            self.registry,
+            policy=self.policy,
+            allowed_side_effects=self.allowed_side_effects,
+            allow_network=self.allow_network,
+        )
+        if not pre.ok:
+            raise SurfaceFailure("pre tool gate failed", gate_result=pre.gate_result)
+
+        try:
+            result = self.registry.handler(tool_name)(params)
+        except Exception as e:  # noqa: BLE001
+            raise SurfaceFailure(
+                f"tool handler failed: {e}",
+                gate_result=GateResult(
+                    ok=False,
+                    failure_type=FailureType.SPEC_ADHERENCE,
+                    feedback=[
+                        _fb(
+                            FailureSubtype.TOOL_MISUSE.value,
+                            f"{type(e).__name__}: {e}",
+                            "tool handler must execute successfully through ToolRegistry",
+                            "修复 handler_ref、handler 实现或工具运行环境",
+                        )
+                    ],
+                ),
+            ) from e
+
+        post = PostToolGate.check(
+            tool_name,
+            result,
+            max_output_chars=self.max_output_chars,
+            taint_tags=taint_tags,
+        )
+        if not post.ok:
+            raise SurfaceFailure("post tool gate failed", gate_result=post.gate_result)
+        return result

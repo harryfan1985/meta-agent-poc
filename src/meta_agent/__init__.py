@@ -4,6 +4,7 @@ from .attribution import ErrorAttributor
 from .budget import BudgetExceeded, BudgetMeter
 from .context import TASK_INPUT, ContextStore
 from .coordinator import execute
+from .external_agents import CliCodeAgentAdapterBase
 from .dag import (
     DagCycleError,
     affected_subgraph,
@@ -14,7 +15,7 @@ from .dag import (
     topo_order,
 )
 from .runtime_gate import RuntimeGate
-from .tools import PostToolGate, PreToolGate, ToolRegistry
+from .tools import PostToolGate, PreToolGate, ToolExecutor, ToolRegistry
 from .validation import assert_valid_plan, validate_plan
 from .schemas import (
     AgentArtifact,
@@ -49,6 +50,7 @@ __all__ = [
     "ContextStore",
     "TASK_INPUT",
     "execute",
+    "CliCodeAgentAdapterBase",
     "topo_order",
     "has_cycle",
     "entry_nodes",
@@ -58,6 +60,7 @@ __all__ = [
     "DagCycleError",
     "RuntimeGate",
     "ToolRegistry",
+    "ToolExecutor",
     "PreToolGate",
     "PostToolGate",
     "validate_plan",
