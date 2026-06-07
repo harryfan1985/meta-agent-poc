@@ -196,20 +196,7 @@ class AgentRuntimeAdapter:
         ...
 ```
 
-`AgentArtifact` 可扩展为:
-
-```python
-class AgentArtifact(BaseModel):
-    spec_id: str
-    implementation_kind: Literal[
-        "fixture",
-        "prompt_template",
-        "python_module",
-        "external_agent",
-    ]
-    adapter_name: Optional[str] = None
-    handler_ref: Optional[str] = None
-```
+`AgentArtifact` 的权威定义在**设计文档 §2**(真相源,勿在此重复声明),其 `implementation_kind` 已含 `fixture / prompt_template / python_module / external_agent`,外部 agent 形态用 `adapter_name` 指向 `AgentRuntimeAdapter`。本文档只描述 adapter 协议,不另立 schema。
 
 这样 Claude Code、opencode、Pi agent 都只是 adapter,不会污染核心 spec/runtime。
 

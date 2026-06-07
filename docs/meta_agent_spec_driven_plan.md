@@ -980,7 +980,7 @@ def classify(spec_id, gate, store, swarm):
 
 | 层 | 选择 | 说明 |
 |---|---|---|
-| 编排语言 | Python 3.11+ | 【工程补全】生成产物即 Python 模块,语言一致最省事 |
+| 编排语言 | Python 3.11+ | 【工程补全】引擎与生成模块同语言最省事;artifact 可为 fixture/prompt/python_module/external_agent 四形态 |
 | LLM 后端 | 可插拔,默认 Anthropic API | **【论文】** 框架 executor-agnostic;论文用 GPT-4o-mini 做主对比、Claude Sonnet 4.6 把均分从 82.7 提到 87.9。各组件(planner/codegen/verifier/executor)可分别配模型 |
 | 验证器档位 | **【工程补全】** 独立于生成器,默认便宜档(Haiku 级)| 借鉴 MAV 的 weak-to-strong:用一组**弱/便宜**模型组面板投票即可提升强生成器(§3.7);生成走强档、验证走便宜档,直接压低"验证开销大"风险(§10)|
 | 结构化输出 | tool/JSON schema 强约束 | 所有 Stage 产物都按 Pydantic schema 校验,解析失败即重生成 |
@@ -1004,6 +1004,18 @@ def classify(spec_id, gate, store, swarm):
 | **强隔离** | gVisor / Firecracker microVM | 多租户/对抗环境 |
 
 统一约束(各档都要):**默认禁网**,仅 `ToolDefinition.requires_network=True` 的工具经 §3.6 `handler` 走受控代理出网;文件系统按 `side_effects` 授权(默认只读临时目录);墙钟超时 + 输出大小上限;**禁止从 grounding/检索文本里执行任何指令**(防注入,§10)。
+
+**`external_agent` 的威胁模型(control-plane 形态,与上表的"生成代码"不同)**:`implementation_kind="external_agent"` 把节点委派给外部 code agent(Claude Code/opencode/Pi),它们**直接在真实 workspace/repo 上动手**,无法用"禁网 subprocess"那套隔离。信任边界改为**能力约束 + 输出仍过 gate**:
+
+| 维度 | 约束 |
+|---|---|
+| 写权限 | 只允许改 `RecoveryAction`/spec 声明的**允许范围**(路径白名单 / 单节点 diff);超范围改动判 `spec_adherence + tool_misuse` |
+| 工具/网络 | adapter 暴露的能力必须映射成 `ToolDefinition`,经 PreToolGate(§4.4)按 `side_effects`/`requires_network`/`risk_tier` 放行 |
+| 隔离 | 高风险任务在一次性 worktree / 容器副本里跑 adapter,提交前 diff 必须过 gate,**不直接落主工作区** |
+| 不可信产物 | code agent 的输出(代码、diff、测试结论)默认 `untrusted`(§4.9),**必须过 `RuntimeGate`/`ConstructionVerifier` 才传播**;它不能自宣成功(architecture.md "责任分界") |
+| 审计 | adapter 的每次调用、工具使用、文件改动都进 `TraceEvent`,可回放 |
+
+一句话:`python_module` 靠**沙箱隔离**防御,`external_agent` 靠**能力最小化 + 一次性 worktree + 产物过 gate**防御;两者都遵守"未验证不传播"。
 
 ### 7.2 统一预算模型
 
@@ -1140,11 +1152,22 @@ M0 注册 `jsonschema` / `field_present` / `field_absent` / `equals_input` / `co
 - 去 prompt analysis:−2.4
 
 **验收指标(本方案)**:
+
+*结果类(对齐论文)*
 1. 任务成功率(对齐上表)。
 2. 错误恢复率:注入中间错误后仍成功完成的比例。
 3. 工作流稳定性:long-horizon 任务的级联失败率。
 4. 成本:每任务 LLM 调用数 / token / 墙钟时间(论文各 Stage 耗时 100~700s 量级,可作上界参考)。
 5. **消融自检**:本地复现"去验证掉 ~7 分"的趋势,验证"验证是承重组件"而非摆设。
+
+*验证质量类(本方案核心差异化必须自测,对应 §4.7–4.12)*
+6. **gate 强度** —— `mutation_score`(§4.12):注入 mutation 后被 gate 抓住的比例;过低说明 assertion/aspect 形同虚设。
+7. **判官质量** —— 模型 verifier 的 precision / recall / **false_accept_rate** / false_reject_rate(§4.7 golden cases 校准);高风险任务优先压低 false accept,未达阈值的 backend 不进 hot path。
+8. **验证充分性** —— `VerificationCoverage`(§4.8):schema/assertion/claim/edge/tool/regression 覆盖率;"gate passed"必须配 coverage,否则只是验了局部。
+9. **归因准确率** —— 注入已知错误,`ErrorAttributor` 把它判成正确 locality(local/upstream/structural)的比例 + 选对责任 `target` 的比例。
+10. **判官稳健性** —— `VerifierHealth` 漂移监控(§4.11):模型/prompt/schema 版本变更后 false_accept_rate 的变化;swap-test 偏差检测(§4.6)通过率。
+
+> 取舍:6~10 是本方案相对论文 baseline 的"承重组件自检"。即便结果类指标(1~5)持平论文,若 mutation_score / false_accept 不达标,也判**验证不可生产**——因为这套系统卖点正是"可信验证",而非分数本身。
 
 ---
 

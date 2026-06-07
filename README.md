@@ -51,7 +51,7 @@
 
 ## 技术栈
 
-- **Python 3.11+** —— 生成产物即 Python 模块
+- **Python 3.11+** —— 引擎语言;artifact 可为 fixture/prompt/python_module/external_agent
 - **Anthropic API**(默认,可插拔)—— 框架 executor-agnostic,各组件可分别配模型
 - **Pydantic** —— 所有 Stage 产物按 schema 强校验
 - **沙箱执行** —— 生成代码默认不可信,强隔离 + 禁网 + 超时 + 资源上限
