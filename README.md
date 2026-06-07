@@ -21,6 +21,7 @@
 - 📄 **[docs/meta_agent_spec_driven_plan.md](docs/meta_agent_spec_driven_plan.md)** —— 唯一的设计真相源(数据模型、构造期/执行期设计、错误归因、技术选型、落地路线、评测协议)。
 - 📄 **[docs/conception.md](docs/conception.md)** —— 项目概念定义与范围边界:spec-driven multi-agent engine / compiler-runtime。
 - 📄 **[docs/architecture.md](docs/architecture.md)** —— 系统架构与 code agent 集成方式:Meta-Agent Engine 作为 control plane,Claude Code/opencode/Pi agent 作为 execution plane。
+- 📄 **[docs/frontend.md](docs/frontend.md)** —— 前端设计:graph-first workflow debugger / verification cockpit。
 - 📄 **[docs/analysis/](docs/analysis/README.md)** —— 相关论文与开源验证工具调研(MAV、DeepVerifier、VERIMAP、Agent-as-Judge、Guardrails 等),作为设计参考而非真相源。
 - 📄 **[AGENTS.md](AGENTS.md)** —— 给在本仓库工作的 AI agent / 协作者的项目指引。
 
