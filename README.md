@@ -1,5 +1,7 @@
 # meta-agent-poc
 
+[![CI](https://github.com/harryfan1985/meta-agent-poc/actions/workflows/ci.yml/badge.svg)](https://github.com/harryfan1985/meta-agent-poc/actions/workflows/ci.yml)
+
 > Spec 驱动的多 Agent 编码系统 —— 论文 *Meta-Agent: From Task Descriptions to Verified Multi-Agent Systems* 的工程落地 PoC。
 
 把"为某个任务搭一套多 agent 系统"本身变成一条**自动化流水线**:
@@ -16,7 +18,20 @@
 
 ## 当前状态
 
-**设计阶段** —— 目前仓库只有完整的实现方案,尚无代码。
+**M0/M1 + opencode 对接 + 可观测已落地**(`src/meta_agent/`,90 测试,覆盖 95%,纯机判无 LLM 依赖):
+
+| 里程碑 | 内容 | 状态 |
+|---|---|---|
+| **M0** | schema / DAG / `gather_inputs` / RuntimeGate 机判 / ArtifactLoader 四形态 / Coordinator / 附录 A 端到端 | ✅ |
+| **M1** | 三级归因 + 恢复闭环 + 预算 + 工具门 + 构造期校验预检 + golden + coverage | ✅ |
+| **opencode** | `OpenCodeAdapter`(control-plane 执行后端,产物经 RuntimeGate) | ✅ |
+| **可观测** | `TraceEvent` 接入执行期(JSONL/回放数据底座) | ✅ |
+| **M2** | 构造期流水线 Stage 1→5(接真实 LLM 自动生成 swarm) | ⏭️ |
+| **M3** | verifier 后端栈 / 校准 / claim-evidence / mutation | ⏭️ |
+
+> 快速跑通:`pip install -e ".[dev]" && pytest`。
+
+设计文档:
 
 - 📄 **[docs/meta_agent_spec_driven_plan.md](docs/meta_agent_spec_driven_plan.md)** —— 唯一的设计真相源(数据模型、构造期/执行期设计、错误归因、技术选型、落地路线、评测协议)。
 - 📄 **[docs/conception.md](docs/conception.md)** —— 项目概念定义与范围边界:spec-driven multi-agent engine / compiler-runtime。
