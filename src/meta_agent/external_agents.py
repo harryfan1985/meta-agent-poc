@@ -8,10 +8,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import shutil
+import subprocess
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Optional
 
 from .schemas import (
     AgentSpec,
@@ -139,3 +141,174 @@ class CliCodeAgentAdapterBase:
                 ],
             ),
         )
+
+
+# (argv, cwd, timeout_seconds) -> (exit_code, stdout, stderr)
+ProcRunner = Callable[[list, str, float], tuple]
+
+
+def _default_runner(argv: list, cwd: str, timeout: float) -> tuple:
+    proc = subprocess.run(
+        argv, cwd=cwd, capture_output=True, text=True, timeout=timeout
+    )
+    return proc.returncode, proc.stdout, proc.stderr
+
+
+class OpenCodeAdapter(CliCodeAgentAdapterBase):
+    """control-plane 执行后端:把某节点委派给 opencode CLI(`opencode run`)。
+
+    产物默认 untrusted,经基类(worktree/diff/越权拦截/超限)后,**仍必须过 RuntimeGate**。
+    `runner` 可注入,使命令构建/事件解析/失败映射等确定性逻辑无需真实 opencode 即可单测;
+    真实 `opencode run` 的实跑属 [eval](见 tests/eval)。
+    """
+
+    def __init__(
+        self,
+        *,
+        model: Optional[str] = None,
+        runner: Optional[ProcRunner] = None,
+        timeout: float = 180.0,
+        workspace_root: str | Path = "",
+        allowed_paths: list[str] | None = None,
+        keep_worktree: bool = False,
+        max_output_chars: int = 100_000,
+    ):
+        super().__init__(
+            workspace_root=workspace_root,
+            allowed_paths=allowed_paths,
+            keep_worktree=keep_worktree,
+            max_output_chars=max_output_chars,
+        )
+        self.model = model
+        self.runner = runner or _default_runner
+        self.timeout = timeout
+        self.last_argv: list[str] = []
+
+    # ---- provider hook ----
+    def run_agent(self, worktree: Path, spec: AgentSpec, message: dict, history: list) -> dict:
+        prompt = self.render_prompt(spec, message, history)
+        argv = self.build_command(worktree, prompt)
+        self.last_argv = argv
+        try:
+            exit_code, stdout, stderr = self.runner(argv, str(worktree), self.timeout)
+        except subprocess.TimeoutExpired as e:  # pragma: no cover - 真实进程超时
+            raise self._surface(
+                "opencode run timed out", FailureSubtype.TIMEOUT.value,
+                f">{self.timeout}s", "opencode run 应在预算内完成",
+            ) from e
+        if exit_code != 0:
+            raise self._surface(
+                "opencode run exited non-zero", FailureSubtype.TOOL_MISUSE.value,
+                f"exit={exit_code}: {(stderr or '')[:500]}", "opencode run 应成功退出",
+            )
+        return self.parse_output(stdout, spec)
+
+    # ---- provider-specific bits (可被子类/测试覆盖)----
+    def build_command(self, worktree: Path, prompt: str) -> list[str]:
+        argv = ["opencode", "run", "--dir", str(worktree), "--format", "json"]
+        if self.model:
+            argv += ["-m", self.model]
+        argv.append(prompt)
+        return argv
+
+    def render_prompt(self, spec: AgentSpec, message: dict, history: list) -> str:
+        out = spec.io_contract.output_schema
+        fields = ", ".join(f"{k}({v.type})" for k, v in out.items())
+        required = ", ".join(spec.io_contract.required_out)
+        retry = ""
+        if history:
+            retry = "\n上一轮验证反馈(请修正):\n" + json.dumps(history[-1], ensure_ascii=False)
+        return (
+            f"角色:{spec.role or spec.spec_id}\n"
+            f"输入(JSON):{json.dumps(message, ensure_ascii=False)}\n"
+            f"只输出一个 JSON 对象,字段:{fields};必填:{required}。"
+            f"不要任何解释或代码围栏之外的文字。{retry}"
+        )
+
+    def parse_output(self, stdout: str, spec: AgentSpec) -> dict:
+        events = self._iter_json_objects(stdout)
+        for ev in events:
+            if isinstance(ev, dict) and ev.get("type") == "error":
+                err = ev.get("error")
+                msg = err.get("data", {}).get("message") if isinstance(err, dict) else err
+                raise self._surface(
+                    "opencode reported error event", FailureSubtype.TOOL_MISUSE.value,
+                    str(msg)[:500], "opencode run 应无 error 事件",
+                )
+        text = self._reduce_text(events) if events else stdout
+        obj = self._extract_json_object(text)
+        if obj is None:
+            raise self._surface(
+                "no JSON object in opencode output", FailureSubtype.SCHEMA_VIOLATION.value,
+                (text or "")[:500], "agent 必须输出满足 output_schema 的 JSON 对象",
+            )
+        return obj
+
+    # ---- parsing helpers ----
+    @staticmethod
+    def _iter_json_objects(stdout: str) -> list:
+        out = []
+        for line in (stdout or "").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                out.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+        return out
+
+    @staticmethod
+    def _reduce_text(events: list) -> str:
+        chunks: list[str] = []
+
+        def walk(o: Any) -> None:
+            if isinstance(o, dict):
+                t = o.get("text")
+                if isinstance(t, str):
+                    chunks.append(t)
+                for v in o.values():
+                    walk(v)
+            elif isinstance(o, list):
+                for v in o:
+                    walk(v)
+
+        for ev in events:
+            walk(ev)
+        return "\n".join(chunks) if chunks else json.dumps(events, ensure_ascii=False)
+
+    @staticmethod
+    def _extract_json_object(text: str) -> Optional[dict]:
+        if not text:
+            return None
+        candidates: list[str] = []
+        m = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
+        if m:
+            candidates.append(m.group(1))
+        block = OpenCodeAdapter._last_brace_block(text)
+        if block:
+            candidates.append(block)
+        for c in candidates:
+            try:
+                v = json.loads(c)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(v, dict):
+                return v
+        return None
+
+    @staticmethod
+    def _last_brace_block(text: str) -> Optional[str]:
+        depth = 0
+        start: Optional[int] = None
+        last: Optional[str] = None
+        for i, ch in enumerate(text):
+            if ch == "{":
+                if depth == 0:
+                    start = i
+                depth += 1
+            elif ch == "}" and depth > 0:
+                depth -= 1
+                if depth == 0 and start is not None:
+                    last = text[start : i + 1]
+        return last

@@ -4,7 +4,7 @@ from .attribution import ErrorAttributor
 from .budget import BudgetExceeded, BudgetMeter
 from .context import TASK_INPUT, ContextStore
 from .coordinator import execute
-from .external_agents import CliCodeAgentAdapterBase
+from .external_agents import CliCodeAgentAdapterBase, OpenCodeAdapter
 from .dag import (
     DagCycleError,
     affected_subgraph,
@@ -60,6 +60,8 @@ __all__ = [
     "DagCycleError",
     "RuntimeGate",
     "ToolRegistry",
+    "CliCodeAgentAdapterBase",
+    "OpenCodeAdapter",
     "ToolExecutor",
     "PreToolGate",
     "PostToolGate",
