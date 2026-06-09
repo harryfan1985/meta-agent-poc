@@ -10,6 +10,7 @@ RecoveryRouter 的应用逻辑随循环状态内联于此(§5)。
 from __future__ import annotations
 
 from collections import defaultdict
+from time import monotonic
 from typing import Optional
 
 from .attribution import ErrorAttributor
@@ -27,6 +28,7 @@ from .schemas import (
     StructuredFeedback,
     SurfaceFailure,
 )
+from .trace import NullTracer, make_event
 from .validation import assert_valid_plan
 
 
@@ -36,10 +38,12 @@ def execute(
     budget: Optional[Budget] = None,
     store: Optional[ContextStore] = None,
     tool_registry=None,
+    tracer=None,
 ) -> dict:
     budget = budget or Budget()
     meter = BudgetMeter()
     store = store or ContextStore()
+    tracer = tracer or NullTracer()  # 默认零开销;行为不变
     store.put(TASK_INPUT, task_input)
 
     assert_valid_plan(swarm.plan, tool_registry=tool_registry)
@@ -55,19 +59,32 @@ def execute(
             spec_id = order[i]
             spec = swarm.spec(spec_id)
             meter.check_wall(budget)
+            t0 = monotonic()
+            tracer.emit(make_event("start", stage="node", spec_id=spec_id,
+                                   payload={"attempt": local_retries[spec_id] + 1}))
 
             try:
                 inputs = store.gather_inputs(spec_id, swarm)
             except ContractMismatch as e:
                 # 缺字段/歧义 = 分解缺陷 → structural;M1 上浮(replan 属 M2)
+                tracer.emit(make_event("recovery", stage="node", spec_id=spec_id,
+                                       recovery_kind="structural",
+                                       payload={"reason": "contract_mismatch", "detail": str(e)}))
+                tracer.emit(make_event("finish", spec_id=spec_id,
+                                       payload={"ok": False, "reason": "contract_mismatch"}))
                 raise SurfaceFailure(f"structural (contract mismatch): {e}", spec_id=spec_id)
 
             meter.reserve_run(budget)
+            tracer.emit(make_event("llm_call", stage="node", spec_id=spec_id))
             try:
                 output = swarm.agent(spec_id)(inputs, history[spec_id])
             except SurfaceFailure:
+                tracer.emit(make_event("finish", spec_id=spec_id,
+                                       payload={"ok": False, "reason": "agent surface"}))
                 raise
             except Exception as e:  # noqa: BLE001
+                tracer.emit(make_event("finish", spec_id=spec_id,
+                                       payload={"ok": False, "reason": "agent runtime error"}))
                 raise SurfaceFailure(
                     f"agent runtime error: {e}",
                     spec_id=spec_id,
@@ -87,6 +104,8 @@ def execute(
             meter.record_run(budget)
 
             gate = RuntimeGate.check(output, spec, message=inputs, policy=policy)
+            tracer.emit(make_event("gate_result", stage="runtime_gate", spec_id=spec_id,
+                                   gate_result=gate, latency_ms=int((monotonic() - t0) * 1000)))
             if gate.ok:
                 store.put(spec_id, output)  # 仅验证通过才向下游传播
                 i += 1
@@ -95,6 +114,9 @@ def execute(
             action = ErrorAttributor.classify(
                 spec_id, gate, store, swarm, local_retries[spec_id], budget
             )
+            tracer.emit(make_event("recovery", stage="node", spec_id=spec_id,
+                                   recovery_kind=action.kind,
+                                   payload={"target": action.target, "subgraph": action.subgraph}))
 
             if action.kind == "local":
                 local_retries[spec_id] += 1
@@ -118,9 +140,14 @@ def execute(
                 continue
 
             # structural:M1 不重规划,直接上浮
+            tracer.emit(make_event("finish", spec_id=spec_id,
+                                   payload={"ok": False, "reason": "structural"}))
             raise SurfaceFailure(f"structural at {spec_id}", spec_id=spec_id, gate_result=gate)
 
     except BudgetExceeded as e:
+        tracer.emit(make_event("budget", payload={"detail": str(e)}))
+        tracer.emit(make_event("finish", payload={"ok": False, "reason": "budget_exceeded"}))
         raise SurfaceFailure(f"budget exceeded: {e}") from e
 
+    tracer.emit(make_event("finish", payload={"ok": True}))
     return store.final_output(swarm)

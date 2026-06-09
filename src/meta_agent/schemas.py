@@ -297,6 +297,34 @@ class GoldenVerificationCase(BaseModel):
     evidence_refs: list[dict] = Field(default_factory=list)
 
 
+# ---------------------------------------------------------------- trace (§7.3)
+
+
+class TraceEvent(BaseModel):
+    """逐 Stage/agent/验证 pass 的结构化事件。不只是日志:也是失败聚类、
+    回放、消融的数据源(gate_result.feedback[].subtype 是天然聚类键)。"""
+
+    ts: str  # ISO 时间戳
+    phase: Literal["construct", "execute"] = "execute"
+    stage: str = ""  # e.g. "node" / "runtime_gate" / "stage2_plan"
+    spec_id: Optional[str] = None
+    event: Literal["start", "llm_call", "gate_result", "recovery", "budget", "finish"]
+    gate_result: Optional[GateResult] = None
+    recovery_kind: Optional[str] = None  # local/upstream/structural
+    tokens: int = 0
+    latency_ms: int = 0
+    payload: dict = Field(default_factory=dict)
+
+
+class TraceSummary(BaseModel):
+    """长轨迹进 AgentVerifier 前的摘要(§7.3);verifier 只基于 summary + 可追溯引用提问。"""
+
+    trace_id: str
+    event_count: int = 0
+    summary: str = ""
+    open_questions: list[str] = Field(default_factory=list)
+
+
 # ---------------------------------------------------------------- exceptions
 
 
