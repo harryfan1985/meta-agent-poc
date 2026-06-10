@@ -1125,7 +1125,7 @@ class VerificationFunctionRegistry:
     def validate_assertions(self, plan: SwarmPlan) -> list[str]: ...
 ```
 
-M0/M1 注册 `jsonschema` / `field_present` / `field_absent` / `equals_input` / `contains` / `not_contains` / `regex_match`;M2 注册带沙箱的 `python_assert`;M3 注册 `model_check`。新增 `ast_no_imports`、`pytest_passes`、`mypy_clean`、`symbolic_check` 等能力时只扩注册表,不改 `RuntimeGate` 主流程。
+M0/M1 注册 `jsonschema` / `field_present` / `field_absent` / `equals_input` / `contains` / `not_contains` / `regex_match`;M2 注册带沙箱的 `python_assert`;M3 注册 `model_check`。当前 M2 实现先采用**受限只读表达式后端**:表达式只能访问 `output` / `input` / `value` 和少量纯函数,禁止 import、属性访问、任意调用、赋值与函数定义;后续若接入进程级沙箱,也必须保持同一 `AssertionSpec` / `GateResult` 契约。新增 `ast_no_imports`、`pytest_passes`、`mypy_clean`、`symbolic_check` 等能力时只扩注册表,不改 `RuntimeGate` 主流程。
 
 ### 7.5 外部工具采用边界
 

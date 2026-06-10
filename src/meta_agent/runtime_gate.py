@@ -1,7 +1,7 @@
-"""RuntimeGate(§4.3)— M0 机判骨架。
+"""RuntimeGate(§4.3)— machine-verifiable runtime checks.
 
 只做机判:schema(out_jsonschema)→ forbidden_patterns → machine_assertions。
-model_check 在 M0/M1 默认拒绝(判 contract);python_assert 沙箱后端尚未实现。
+model_check 在 M0/M1/M2 默认拒绝(判 contract);python_assert 走受限只读表达式后端。
 所有失败都产出带类型 + StructuredFeedback 的 GateResult,不退化成 bool。
 """
 from __future__ import annotations
@@ -11,6 +11,7 @@ from typing import Any, Optional
 
 from jsonschema import Draft202012Validator
 
+from .python_assert import PythonAssertError, evaluate_python_assert
 from .schemas import (
     AgentSpec,
     AssertionSpec,
@@ -178,10 +179,18 @@ class RuntimeGate:
                 subtype="model_check_backend_missing",
             )
         elif k == "python_assert":
-            # python_assert 必须走沙箱 backend;当前实现未接入,不能静默执行。
-            return fail(
-                "python_assert backend 尚未实现;请降级为 regex/contains 或接入沙箱",
-                "等价机判检查或只读沙箱 backend",
-                subtype="python_assert_unsupported",
-            )
+            try:
+                ok = evaluate_python_assert(a.expression, output=output, message=message, value=val)
+            except PythonAssertError as e:
+                return fail(
+                    f"python_assert 无法执行:{e}",
+                    "只读布尔表达式,仅可访问 output/input/value",
+                    subtype="python_assert_error",
+                )
+            if not ok:
+                return fail(
+                    f"python_assert 返回 false: {a.expression}",
+                    "表达式应返回 true",
+                    subtype=a.failure_subtype or "python_assert_failed",
+                )
         return None

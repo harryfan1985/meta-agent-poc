@@ -18,7 +18,7 @@
 
 ## 当前状态
 
-**M0/M1 + opencode 对接 + 可观测 + M2 thin pipeline 已落地**(`src/meta_agent/`,133 测试,覆盖约 94%,确定性测试不依赖真实 LLM):
+**M0/M1 + opencode 对接 + 可观测 + M2 thin pipeline 已落地**(`src/meta_agent/`,144 测试,覆盖约 94%,确定性测试不依赖真实 LLM):
 
 | 里程碑 | 内容 | 状态 |
 |---|---|---|
@@ -26,7 +26,7 @@
 | **M1** | 三级归因 + 恢复闭环 + 预算 + 工具门 + 构造期校验预检 + golden + coverage | ✅ |
 | **opencode** | `OpenCodeAdapter`(control-plane 执行后端,产物经 RuntimeGate) | ✅ |
 | **可观测** | `TraceEvent` 接入执行期与 external agent adapter(JSONL/回放数据底座) | ✅ |
-| **M2 thin** | `construct()` + Stage 1/2/3 StructuredLLM 接缝 + Stage 4 `prompt_template` + Stage 5 `ConstructionVerifier` | ✅ |
+| **M2 thin** | `construct()` + Stage 1/2/3 StructuredLLM 接缝 + Stage 4 `prompt_template` + Stage 5 `ConstructionVerifier` + 受限 `python_assert` 机判后端 | ✅ |
 | **M2 eval** | Anthropic/OpenAI/OpenAI-compatible URL `StructuredLLM` adapter 已接入;真实 task-level 成功率与失败路由评测待跑 | ⏭️ |
 | **M3** | verifier 后端栈 / 校准 / claim-evidence / mutation | ⏭️ |
 

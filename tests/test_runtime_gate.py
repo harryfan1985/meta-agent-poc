@@ -170,9 +170,36 @@ def test_gate_jsonschema_subschema():
     assert bad.ok is False
 
 
-def test_gate_python_assert_unsupported_in_m0():
+def test_gate_python_assert_passes_restricted_expression():
     a = AssertionSpec(assertion_id="pa", kind="python_assert", target_path="/final_code",
-                      expression="True")
+                      expression='"def f" in value and value == output["final_code"]')
+    g = RuntimeGate.check(
+        {"final_code": "def f(): pass", "passed": True},
+        _spec(machine_assertions=[a]),
+    )
+    assert g.ok is True
+
+
+def test_gate_python_assert_false_is_typed_failure():
+    a = AssertionSpec(
+        assertion_id="pa",
+        kind="python_assert",
+        target_path="/final_code",
+        expression='"def f" in value',
+        failure_subtype="field_mismatch",
+    )
     g = RuntimeGate.check({"final_code": "x", "passed": True}, _spec(machine_assertions=[a]))
     assert g.ok is False
-    assert any(f.subtype == "python_assert_unsupported" for f in g.feedback)
+    assert any(f.subtype == "field_mismatch" for f in g.feedback)
+
+
+def test_gate_python_assert_rejects_unsafe_expression():
+    a = AssertionSpec(
+        assertion_id="pa",
+        kind="python_assert",
+        target_path="/final_code",
+        expression="value.__class__",
+    )
+    g = RuntimeGate.check({"final_code": "x", "passed": True}, _spec(machine_assertions=[a]))
+    assert g.ok is False
+    assert any(f.subtype == "python_assert_error" for f in g.feedback)
