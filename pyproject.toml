@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "meta-agent-poc"
 version = "0.0.1"
-description = "Spec-driven multi-agent engine (compiler + runtime). M0 skeleton."
+description = "Spec-driven multi-agent engine (compiler + runtime)."
 requires-python = ">=3.11"
 dependencies = [
     "pydantic>=2",
@@ -14,6 +14,12 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "pytest-cov", "hypothesis"]
+anthropic = ["anthropic>=0.64"]
+openai = ["openai>=1.0"]
+models = ["anthropic>=0.64", "openai>=1.0"]
+
+[project.scripts]
+meta-agent-model-eval = "meta_agent.model_cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -22,3 +28,6 @@ where = ["src"]
 testpaths = ["tests"]
 pythonpath = ["src"]
 addopts = "-q"
+markers = [
+    "eval: tests that call real model providers and are skipped unless credentials are configured",
+]

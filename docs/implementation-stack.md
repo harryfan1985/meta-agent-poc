@@ -81,6 +81,7 @@
 | Claude Code 后端 | **Claude Agent SDK / Claude Code CLI** | B | ClaudeCodeAdapter |
 | opencode 后端 | **opencode CLI / ACP** | B | OpenCodeAdapter(用 Zed 系 ACP) |
 | 远端 agent | **a2a SDK** / ACP | B | 注意 ACP 有 IBM-BeeAI 与 Zed 两套同名,按对接对象选 |
+| 结构化模型 provider | **Anthropic/OpenAI 官方 Python SDK** | B | 只作为 `StructuredLLM` adapter;Stage/Runtime 只看 `generate(system,user,json_schema)->dict` |
 | 代码 AST(代码任务/验证) | **tree-sitter** | B | 跨语言 AST |
 | 代码 workspace / diff | **GitPython**(或 `git worktree` subprocess) | B | 正好支撑 external_agent 威胁模型(一次性 worktree + diff 过 gate) |
 | 可执行证据 | **pytest + coverage.py** | B | 代码任务的硬证据 |

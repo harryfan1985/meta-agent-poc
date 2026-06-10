@@ -247,7 +247,7 @@
 ## 3. 测试基础设施
 
 - **框架**:`pytest` + `pytest-cov`;属性测试 `hypothesis`;`jsonschema` 校验断言。
-- **LLM 替身**:`StubVerifierBackend` / `StubAgentAdapter` / `FakeLLM`(确定性返回),M0–M2 全程用;真实 LLM 仅 `tests/eval/`(标记 `@pytest.mark.eval`,默认跳过,nightly 跑)。
+- **LLM 替身**:`StubVerifierBackend` / `StubAgentAdapter` / `FakeLLM`(确定性返回),M0–M2 单测全程用;真实 LLM 仅 `tests/eval/`(标记 `@pytest.mark.eval`,默认跳过,需显式 `META_AGENT_RUN_PROVIDER_EVAL=1` + provider API key,nightly/手动跑)。
 - **fixtures**:`tests/fixtures/function_completion.py` = 附录 A 的 SwarmPlan + 4 fixture artifacts + 正常/各类错误注入变体(直接服务 E2E-01~03、ATTR-*、MUT-01)。
 - **golden cases**:`tests/golden/*.json` = `GoldenVerificationCase` 集,覆盖 false accept/reject、各 subtype;M1 建最小集,M3 用于 CAL-*。
 - **mutation/metamorphic harness**:`tests/meta/` 独立目录,产出 `mutation_score` 报告。

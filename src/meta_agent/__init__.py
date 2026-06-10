@@ -1,10 +1,21 @@
-"""meta-agent-poc: spec-driven multi-agent engine (M0 skeleton)."""
+"""meta-agent-poc: spec-driven multi-agent engine."""
 from .artifacts import ArtifactLoader
 from .attribution import ErrorAttributor
 from .budget import BudgetExceeded, BudgetMeter
 from .context import TASK_INPUT, ContextStore
 from .coordinator import execute
 from .external_agents import CliCodeAgentAdapterBase, OpenCodeAdapter
+from .llm import (
+    AnthropicStructuredLLM,
+    OpenAIStructuredLLM,
+    StructuredLLM,
+    StructuredLLMConfig,
+    StubStructuredLLM,
+    TemplateAgent,
+    create_structured_llm,
+    generate_model,
+    generate_validated,
+)
 from .dag import (
     DagCycleError,
     affected_subgraph,
@@ -62,6 +73,15 @@ __all__ = [
     "ToolRegistry",
     "CliCodeAgentAdapterBase",
     "OpenCodeAdapter",
+    "AnthropicStructuredLLM",
+    "OpenAIStructuredLLM",
+    "StructuredLLM",
+    "StructuredLLMConfig",
+    "StubStructuredLLM",
+    "TemplateAgent",
+    "create_structured_llm",
+    "generate_model",
+    "generate_validated",
     "ToolExecutor",
     "PreToolGate",
     "PostToolGate",
