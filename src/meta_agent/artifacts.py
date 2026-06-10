@@ -17,9 +17,15 @@ def _import_entrypoint(module_path: str, entrypoint: str) -> Callable:
 
 
 class ArtifactLoader:
-    def __init__(self, fixture_registry: dict[str, Callable] | None = None, adapters: dict | None = None):
+    def __init__(
+        self,
+        fixture_registry: dict[str, Callable] | None = None,
+        adapters: dict | None = None,
+        structured_llm=None,
+    ):
         self.fixture_registry = fixture_registry or {}
         self.adapters = adapters or {}
+        self.structured_llm = structured_llm  # prompt_template 后端(StructuredLLM)
 
     def load(self, artifact: AgentArtifact, spec: AgentSpec) -> Callable:
         kind = artifact.implementation_kind
@@ -28,7 +34,15 @@ class ArtifactLoader:
         if kind == "python_module":
             return _import_entrypoint(artifact.module_path, artifact.entrypoint)
         if kind == "prompt_template":
-            raise NotImplementedError("prompt_template backend: M2")
+            if self.structured_llm is None:
+                raise ValueError("prompt_template artifact requires a structured_llm backend")
+            from .llm import TemplateAgent
+            agent = TemplateAgent(
+                artifact.prompt_template or "",
+                spec.io_contract.out_jsonschema(),
+                self.structured_llm,
+            )
+            return agent.run
         if kind == "external_agent":
             adapter = self.adapters[artifact.adapter_name]
             return lambda message, history: adapter.invoke(spec, message, history)
@@ -59,7 +73,10 @@ class ArtifactLoader:
                 if not artifact.module_path:
                     issues.append(f"{spec_id}: python_module artifact missing module_path")
             elif kind == "prompt_template":
-                issues.append(f"{spec_id}: prompt_template backend is not implemented before M2")
+                if not artifact.prompt_template:
+                    issues.append(f"{spec_id}: prompt_template artifact missing prompt_template")
+                elif self.structured_llm is None:
+                    issues.append(f"{spec_id}: prompt_template artifact requires structured_llm backend")
             elif kind == "external_agent":
                 if not artifact.adapter_name:
                     issues.append(f"{spec_id}: external_agent artifact missing adapter_name")
