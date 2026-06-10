@@ -18,7 +18,7 @@
 
 ## 当前状态
 
-**M0/M1 + opencode 对接 + 可观测 + M2 thin pipeline 已落地**(`src/meta_agent/`,132 测试,覆盖约 94%,确定性测试不依赖真实 LLM):
+**M0/M1 + opencode 对接 + 可观测 + M2 thin pipeline 已落地**(`src/meta_agent/`,133 测试,覆盖约 94%,确定性测试不依赖真实 LLM):
 
 | 里程碑 | 内容 | 状态 |
 |---|---|---|
@@ -60,6 +60,15 @@ meta-agent-model-eval \
   --model "$META_AGENT_OPENAI_MODEL" \
   --base-url "$META_AGENT_OPENAI_BASE_URL" \
   --task "Build a small swarm for a simple coding task"
+```
+
+M2 task-level E2E 默认用 Anthropic;如要用 OpenAI-compatible endpoint,沿用上面的
+`OPENAI_API_KEY` / `META_AGENT_OPENAI_MODEL` / `META_AGENT_OPENAI_BASE_URL`,并设置:
+
+```bash
+export META_AGENT_M2_PROVIDER=openai
+export META_AGENT_RUN_M2_E2E=1
+META_AGENT_RUN_PROVIDER_EVAL=1 pytest tests/eval -q
 ```
 
 `StructuredLLM` provider adapter 只负责把 `system + user + JSON Schema` 变成 dict;输出仍会经过本项目自己的 `jsonschema`/Pydantic/RuntimeGate 校验。

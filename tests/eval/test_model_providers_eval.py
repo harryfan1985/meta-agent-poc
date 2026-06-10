@@ -28,6 +28,15 @@ def _provider_backend(provider: str, model_env: str, api_key_env: str, base_url_
     return create_structured_llm(provider, model, base_url=os.getenv(base_url_env) if base_url_env else None)
 
 
+def _m2_backend():
+    provider = os.getenv("META_AGENT_M2_PROVIDER", "anthropic")
+    if provider == "anthropic":
+        return _provider_backend("anthropic", "META_AGENT_ANTHROPIC_MODEL", "ANTHROPIC_API_KEY")
+    if provider == "openai":
+        return _provider_backend("openai", "META_AGENT_OPENAI_MODEL", "OPENAI_API_KEY", "META_AGENT_OPENAI_BASE_URL")
+    pytest.skip("META_AGENT_M2_PROVIDER must be 'anthropic' or 'openai'")
+
+
 def test_anthropic_schema_generation_smoke():
     backend = _provider_backend("anthropic", "META_AGENT_ANTHROPIC_MODEL", "ANTHROPIC_API_KEY")
     out = backend.generate("Return the integer 42.", {"request": "answer"}, SMOKE_SCHEMA)
@@ -43,9 +52,10 @@ def test_openai_schema_generation_smoke():
 def test_m2_construct_execute_smoke():
     if os.getenv("META_AGENT_RUN_M2_E2E") != "1":
         pytest.skip("set META_AGENT_RUN_M2_E2E=1 to run real-model construct+execute smoke")
-    backend = _provider_backend("anthropic", "META_AGENT_ANTHROPIC_MODEL", "ANTHROPIC_API_KEY")
+    backend = _m2_backend()
+    task_input = {"task": "say hello"}
     loader = ArtifactLoader(structured_llm=backend)
-    stages = default_stages(backend, loader)
+    stages = default_stages(backend, loader, sample_inputs={"*": task_input})
 
     task = (
         "Build a minimal swarm that reads input field `task` and returns output field "
@@ -53,5 +63,5 @@ def test_m2_construct_execute_smoke():
     )
     swarm = construct(task, stages)
     loader.bind(swarm)
-    out = execute(swarm, {"task": "say hello"})
+    out = execute(swarm, task_input)
     assert isinstance(out, dict)

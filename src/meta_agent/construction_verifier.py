@@ -87,7 +87,7 @@ def _static_python_import_check(module_path: str, forbidden_patterns: list) -> l
 class ConstructionVerifier:
     def __init__(self, loader, sample_inputs: Optional[dict] = None):
         self.loader = loader  # ArtifactLoader
-        self.sample_inputs = sample_inputs or {}  # spec_id -> message(代表性输入)
+        self.sample_inputs = sample_inputs or {}  # spec_id -> message; "*" = default message
 
     def verify(self, artifact: AgentArtifact, spec: AgentSpec) -> GateResult:
         # 1) 静态:加载成 callable
@@ -121,7 +121,7 @@ class ConstructionVerifier:
                                   feedback=import_fb)
 
         # 2) 行为:代表性输入 → 跑 → 复用 RuntimeGate
-        msg = self.sample_inputs.get(spec.spec_id) or representative_input(spec)
+        msg = self.sample_inputs.get(spec.spec_id) or self.sample_inputs.get("*") or representative_input(spec)
         try:
             output = agent(msg, [])
         except Exception as e:  # noqa: BLE001

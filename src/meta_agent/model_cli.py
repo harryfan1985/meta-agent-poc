@@ -49,7 +49,8 @@ def main(argv: list[str] | None = None) -> int:
         base_url=args.base_url,
     )
     loader = ArtifactLoader(structured_llm=backend)
-    stages = default_stages(backend, loader)
+    task_input = args.task_input_json if args.task_input_json is not None else {"task": args.task}
+    stages = default_stages(backend, loader, sample_inputs={"*": task_input})
 
     if args.trace_jsonl:
         trace_path = Path(args.trace_jsonl)
@@ -61,7 +62,6 @@ def main(argv: list[str] | None = None) -> int:
         tracer = JsonlTracer(stream)
         swarm = construct(args.task, stages, tracer=tracer)
         loader.bind(swarm)
-        task_input = args.task_input_json if args.task_input_json is not None else {"task": args.task}
         output = execute(swarm, task_input, tracer=tracer)
 
     print(json.dumps({"output": output, "trace_jsonl": str(trace_path)}, ensure_ascii=False, indent=2))

@@ -52,6 +52,17 @@ def test_behavioral_pass_on_good_fixture():
     assert gate.ok is True
 
 
+def test_wildcard_sample_input_is_used_when_spec_sample_missing():
+    plan = build_plan()
+    spec = next(s for s in plan.specs if s.spec_id == "spec_analyzer")
+    verifier = ConstructionVerifier(
+        ArtifactLoader(fixture_registry=FIXTURES),
+        sample_inputs={"*": dict(TASK_INPUT_EXAMPLE)},
+    )
+    gate = verifier.verify(_fixture_artifact("spec_analyzer", "fx_spec_analyzer"), spec)
+    assert gate.ok is True
+
+
 def test_behavioral_fail_routes_typed():
     plan = build_plan()
     spec = next(s for s in plan.specs if s.spec_id == "spec_analyzer")
