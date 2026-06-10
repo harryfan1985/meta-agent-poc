@@ -16,7 +16,9 @@
 
 ## 当前状态
 
-**设计阶段,尚无代码。** 文档构成:主设计文档(真相源)、[conception.md](docs/conception.md)(概念/边界)、[architecture.md](docs/architecture.md)(control-plane/adapter)、[frontend.md](docs/frontend.md)(verification cockpit)、[testing.md](docs/testing.md)(测试策略与用例,**写代码前先读对应组件的用例,M0 起按它 TDD**)、[implementation-stack.md](docs/implementation-stack.md)(开源重用分级,**加依赖前先查它**:自建控制面、OSS 只作 adapter/backend、不引训练/编排框架)、`docs/analysis/`(调研,仅参考)、`README.md`、本文件。第一段要写的代码是 §8 的 **Milestone 0**:Pydantic schema + `ArtifactLoader` + `Coordinator` + `ContextStore` + 拓扑执行 + DAG 环检测,然后用手写 `SwarmPlan` 配置 + `fixture` artifacts 复刻论文 function-completion 4-agent swarm 跑通执行期。**可直接抄的完整种子见主设计文档附录 A。**
+**M0/M1 已完成,M2 thin pipeline 已落地。** 当前代码位于 `src/meta_agent/`:Pydantic schema、`ArtifactLoader`、`Coordinator`、`ContextStore`、拓扑执行、`RuntimeGate`、错误归因/恢复、预算、工具门、构造期预检、`TraceEvent`、`OpenCodeAdapter`,以及 `construct()` + Stage 1/2/3 StructuredLLM 接缝 + Stage 4 `prompt_template` + Stage 5 `ConstructionVerifier`。当前确定性基线:114 个测试,覆盖率约 95%,不依赖真实 LLM。下一步重点是 M2 eval:接真实 LLM 自动生成 swarm,跑 task-level 成功率、失败路由和成本/trace 评估。
+
+文档构成:主设计文档(真相源)、[conception.md](docs/conception.md)(概念/边界)、[architecture.md](docs/architecture.md)(control-plane/adapter)、[frontend.md](docs/frontend.md)(verification cockpit)、[testing.md](docs/testing.md)(测试策略与用例,**改代码前先读对应组件的用例,继续按它 TDD**)、[implementation-stack.md](docs/implementation-stack.md)(开源重用分级,**加依赖前先查它**:自建控制面、OSS 只作 adapter/backend、不引训练/编排框架)、`docs/analysis/`(调研,仅参考)、`README.md`、本文件。
 
 ## 架构速查
 

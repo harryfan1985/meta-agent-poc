@@ -83,9 +83,21 @@ def test_grounding_failure_reruns_grounding_then_retries():
 
     def ground(p):
         ground_calls[0] += 1
+        if ground_calls[0] == 2:
+            grounded = p.model_copy(deep=True)
+            grounded.specs[0].role = "grounded analyzer"
+            return grounded
         return p
 
-    codegen, cg_calls = _codegen_counter()
+    cg_calls = defaultdict(int)
+    roles_seen = []
+
+    def codegen(spec, plan, feedback):
+        cg_calls[spec.spec_id] += 1
+        if spec.spec_id == "spec_analyzer":
+            roles_seen.append(spec.role)
+        return AgentArtifact(spec_id=spec.spec_id, implementation_kind="fixture", handler_ref="h")
+
     state = {"first": True}
 
     def verify(a, s):
@@ -101,10 +113,12 @@ def test_grounding_failure_reruns_grounding_then_retries():
         codegen=codegen,
         verify=verify,
     )
-    construct("t", stages)
+    swarm = construct("t", stages)
     # 一次初始 ground + 一次因 grounding 失败重跑;spec_analyzer codegen 重试一次
     assert ground_calls[0] == 2
     assert cg_calls["spec_analyzer"] == 2
+    assert roles_seen[-1] == "grounded analyzer"
+    assert swarm.spec("spec_analyzer").role == "grounded analyzer"
 
 
 def test_passes_exhausted_surfaces():

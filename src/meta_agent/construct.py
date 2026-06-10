@@ -69,11 +69,12 @@ def construct(
         plan = stages.plan(parsed)
         assert_valid_plan(plan, tool_registry=tool_registry)  # registry.validate + constitution
         plan = stages.ground(plan)
+        assert_valid_plan(plan, tool_registry=tool_registry)
         tracer.emit(make_event("start", phase="construct", stage="stage2_plan",
                                payload={"swarm": plan.swarm_name, "n_specs": len(plan.specs)}))
 
         try:
-            artifacts = _build_artifacts(plan, stages, budget, tracer)
+            plan, artifacts = _build_artifacts(plan, stages, budget, tracer, tool_registry)
         except _Replan as r:
             replans += 1
             tracer.emit(make_event("recovery", phase="construct", stage="stage2_plan",
@@ -91,9 +92,15 @@ def construct(
         return ExecutableSwarm(plan=plan, artifacts=artifacts)
 
 
-def _build_artifacts(plan: SwarmPlan, stages: Stages, budget: Budget, tracer) -> dict:
+def _find_spec(plan: SwarmPlan, spec_id: str) -> AgentSpec:
+    return next(s for s in plan.specs if s.spec_id == spec_id)
+
+
+def _build_artifacts(plan: SwarmPlan, stages: Stages, budget: Budget, tracer, tool_registry=None) -> tuple[SwarmPlan, dict]:
     artifacts: dict[str, AgentArtifact] = {}
-    for spec in plan.specs:
+    spec_index = 0
+    while spec_index < len(plan.specs):
+        spec = plan.specs[spec_index]
         feedback: list = []
         gate: Optional[GateResult] = None
         for _pass in range(1, budget.max_construct_passes + 1):
@@ -111,7 +118,9 @@ def _build_artifacts(plan: SwarmPlan, stages: Stages, budget: Budget, tracer) ->
             if gate.failure_type == FailureType.CONTRACT:
                 raise _Replan(gate, spec.spec_id)  # → Stage 2 重规划
             if gate.failure_type == FailureType.GROUNDING:
-                stages.ground(plan)  # 重跑 grounding(就地回填)
+                plan = stages.ground(plan)  # 重跑 grounding(可能返回新 plan,不只就地回填)
+                assert_valid_plan(plan, tool_registry=tool_registry)
+                spec = _find_spec(plan, spec.spec_id)
             # spec_adherence(及 grounding 后)→ 带反馈重生成代码
             feedback = gate.feedback
         else:
@@ -119,4 +128,5 @@ def _build_artifacts(plan: SwarmPlan, stages: Stages, budget: Budget, tracer) ->
                 f"construct: passes exhausted for {spec.spec_id}",
                 spec_id=spec.spec_id, gate_result=gate,
             )
-    return artifacts
+        spec_index += 1
+    return plan, artifacts

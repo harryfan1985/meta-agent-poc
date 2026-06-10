@@ -18,15 +18,16 @@
 
 ## 当前状态
 
-**M0/M1 + opencode 对接 + 可观测已落地**(`src/meta_agent/`,90 测试,覆盖 95%,纯机判无 LLM 依赖):
+**M0/M1 + opencode 对接 + 可观测 + M2 thin pipeline 已落地**(`src/meta_agent/`,114 测试,覆盖约 95%,确定性测试不依赖真实 LLM):
 
 | 里程碑 | 内容 | 状态 |
 |---|---|---|
 | **M0** | schema / DAG / `gather_inputs` / RuntimeGate 机判 / ArtifactLoader 四形态 / Coordinator / 附录 A 端到端 | ✅ |
 | **M1** | 三级归因 + 恢复闭环 + 预算 + 工具门 + 构造期校验预检 + golden + coverage | ✅ |
 | **opencode** | `OpenCodeAdapter`(control-plane 执行后端,产物经 RuntimeGate) | ✅ |
-| **可观测** | `TraceEvent` 接入执行期(JSONL/回放数据底座) | ✅ |
-| **M2** | 构造期流水线 Stage 1→5(接真实 LLM 自动生成 swarm) | ⏭️ |
+| **可观测** | `TraceEvent` 接入执行期与 external agent adapter(JSONL/回放数据底座) | ✅ |
+| **M2 thin** | `construct()` + Stage 1/2/3 StructuredLLM 接缝 + Stage 4 `prompt_template` + Stage 5 `ConstructionVerifier` | ✅ |
+| **M2 eval** | 接真实 LLM 自动生成 swarm,跑 task-level 成功率与失败路由评测 | ⏭️ |
 | **M3** | verifier 后端栈 / 校准 / claim-evidence / mutation | ⏭️ |
 
 > 快速跑通:`pip install -e ".[dev]" && pytest`。
@@ -49,7 +50,7 @@
 | 构造期 Stage 1 | `IntentParser` | 任务描述 → 结构化 `ParsedIntent`(含 web 检索补任务示例) |
 | 构造期 Stage 2 | `SwarmPlanner` | 分解为少量子任务 → `AgentSpec` 列表 + DAG |
 | 构造期 Stage 3 | `GroundingResearcher` | 按 spec 定向检索,把外部知识写回 spec |
-| 构造期 Stage 4 | `AgentCodeGen` | 每个 spec → 带 `run(message, history)` 接口的 Python 模块 |
+| 构造期 Stage 4 | `AgentCodeGen` | 每个 spec → `prompt_template` / Python 模块 / 外部 code agent artifact |
 | 构造期 Stage 5 | `ConstructionVerifier` | 静态 + 行为双检,产出**带类型**的失败信号 |
 | 执行期 | `Coordinator` / `ContextStore` | 按 DAG 拓扑序调度,路由中间产物 |
 | 执行期 | `RuntimeGate` | 每个中间输出消费前校验 `yᵢ ∈ Cᵢ` |
@@ -61,7 +62,7 @@
 |---|---|
 | **M0** | Pydantic schema + `ArtifactLoader` + `Coordinator` + `ContextStore` + 拓扑执行 + DAG 环检测;用手写 `SwarmPlan` 配置 + fixture artifacts 跑通论文 4-agent swarm |
 | **M1** | `RuntimeGate` + `ErrorAttributor` + `RecoveryRouter`;四类错误归因单测 |
-| **M2** | 构造期 Stage 1→5 全流水线;带类型失败信号 + 类型化路由 |
+| **M2** | 构造期 Stage 1→5 全流水线;带类型失败信号 + 类型化路由;先以 `prompt_template` thin impl 跑通,再接真实 LLM eval |
 | **M3** | 6 个 benchmark 跑分 + 消融 + 成本预算 + 沙箱加固 |
 
 详见 [设计文档 §8](docs/meta_agent_spec_driven_plan.md)。
