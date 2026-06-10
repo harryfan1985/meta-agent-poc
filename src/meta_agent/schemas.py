@@ -136,6 +136,24 @@ class SwarmPlan(BaseModel):
     constitution_rules: list[ConstitutionRule] = Field(default_factory=list)
 
 
+# ---------------------------------------------------------------- Stage 1: ParsedIntent
+
+
+class TaskExample(BaseModel):
+    task_type: str
+    example: str
+    source_url: Optional[str] = None  # 来自 web_search 的 provenance
+
+
+class ParsedIntent(BaseModel):
+    goal: str
+    domain: str = ""
+    tone: str = ""  # 论文遗留字段;code/math 任务通常为空
+    entities: list[str] = Field(default_factory=list)
+    constraints: list[str] = Field(default_factory=list)
+    task_examples: list[TaskExample] = Field(default_factory=list)
+
+
 # ---------------------------------------------------------------- artifacts
 
 
