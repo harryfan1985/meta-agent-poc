@@ -115,6 +115,23 @@ def test_invoke_returns_dict_and_cleans_worktree():
     assert a.last_worktree is not None and not a.last_worktree.exists()  # 已清理
 
 
+def test_invoke_emits_control_plane_audit_event():
+    from meta_agent.trace import ListTracer
+
+    tr = ListTracer()
+    a = OpenCodeAdapter(
+        runner=_runner_returning(_text_event('{"answer": 1}')), workspace_root="", tracer=tr
+    )
+    a.invoke(_spec(), {"x": "v"}, [])
+    audits = [e for e in tr.events if e.event == "llm_call" and e.stage == "external_agent"]
+    assert len(audits) == 1
+    p = audits[0].payload
+    assert p["adapter"] == "OpenCodeAdapter"
+    assert p["exit_code"] == 0  # 真实退出码回写
+    assert p["argv"][:2] == ["opencode", "run"]
+    assert p["changed_paths"] == []  # canned runner 未改文件
+
+
 # ---- control-plane 端到端:external_agent 经 RuntimeGate ----
 
 def _canned_adapter(obj):

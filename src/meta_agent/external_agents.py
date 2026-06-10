@@ -23,6 +23,7 @@ from .schemas import (
     StructuredFeedback,
     SurfaceFailure,
 )
+from .trace import NullTracer, make_event
 
 
 _IGNORE_DIRS = {".git", ".venv", "venv", "__pycache__", ".pytest_cache", ".mypy_cache"}
@@ -35,11 +36,13 @@ class CliCodeAgentAdapterBase:
         allowed_paths: list[str] | None = None,
         keep_worktree: bool = False,
         max_output_chars: int = 100_000,
+        tracer=None,
     ):
         self.workspace_root = Path(workspace_root)
         self.allowed_paths = [p.strip("/") for p in (allowed_paths or [])]
         self.keep_worktree = keep_worktree
         self.max_output_chars = max_output_chars
+        self.tracer = tracer or NullTracer()  # 默认零开销;传入同一 tracer 可与执行期 trace 合流
         self.last_changed_paths: list[str] = []
         self.last_worktree: Path | None = None
 
@@ -75,6 +78,7 @@ class CliCodeAgentAdapterBase:
                     f"out-of-scope paths: {violations}",
                     f"only modify paths under {self.allowed_paths}",
                 )
+            self._emit_audit(spec, worktree, size)
             return output
         finally:
             if not self.keep_worktree:
@@ -125,6 +129,22 @@ class CliCodeAgentAdapterBase:
         clean = rel_path.strip("/")
         return any(clean == allowed or clean.startswith(f"{allowed}/") for allowed in self.allowed_paths)
 
+    def _emit_audit(self, spec: AgentSpec, worktree: Path, output_size: int) -> None:
+        """control-plane 审计事件:外部 agent 在隔离 worktree 里改了什么、用了什么命令。"""
+        self.tracer.emit(make_event(
+            "llm_call",
+            stage="external_agent",
+            spec_id=spec.spec_id,
+            payload={
+                "adapter": type(self).__name__,
+                "worktree": str(worktree),
+                "changed_paths": self.last_changed_paths,
+                "output_size": output_size,
+                "argv": getattr(self, "last_argv", None),
+                "exit_code": getattr(self, "last_exit_code", None),
+            },
+        ))
+
     def _surface(self, reason: str, subtype: str, evidence: str, expected: str) -> SurfaceFailure:
         return SurfaceFailure(
             reason,
@@ -172,17 +192,20 @@ class OpenCodeAdapter(CliCodeAgentAdapterBase):
         allowed_paths: list[str] | None = None,
         keep_worktree: bool = False,
         max_output_chars: int = 100_000,
+        tracer=None,
     ):
         super().__init__(
             workspace_root=workspace_root,
             allowed_paths=allowed_paths,
             keep_worktree=keep_worktree,
             max_output_chars=max_output_chars,
+            tracer=tracer,
         )
         self.model = model
         self.runner = runner or _default_runner
         self.timeout = timeout
         self.last_argv: list[str] = []
+        self.last_exit_code: Optional[int] = None
 
     # ---- provider hook ----
     def run_agent(self, worktree: Path, spec: AgentSpec, message: dict, history: list) -> dict:
@@ -196,6 +219,7 @@ class OpenCodeAdapter(CliCodeAgentAdapterBase):
                 "opencode run timed out", FailureSubtype.TIMEOUT.value,
                 f">{self.timeout}s", "opencode run 应在预算内完成",
             ) from e
+        self.last_exit_code = exit_code
         if exit_code != 0:
             raise self._surface(
                 "opencode run exited non-zero", FailureSubtype.TOOL_MISUSE.value,
