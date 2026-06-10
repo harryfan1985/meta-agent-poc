@@ -32,3 +32,11 @@ def test_golden_coverage_attached():
     assert cov.schema_fields_checked == cov.schema_fields_total
     assert cov.assertions_total == 1  # cv1
     assert cov.assertions_checked == 1
+
+
+def test_function_completion_cv1_uses_python_assert():
+    """附录 A 的 cv1 已从 M0/M1 regex 降级版切回 M2 python_assert。"""
+    spec = build_swarm().spec("code_verifier")
+    [assertion] = spec.verification_criteria.machine_assertions
+    assert assertion.assertion_id == "cv1"
+    assert assertion.kind == "python_assert"

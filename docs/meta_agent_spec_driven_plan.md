@@ -1385,7 +1385,7 @@ swarm = ExecutableSwarm(plan=plan, artifacts=artifacts)
 
 ### A.4 一次执行的 gate 验收(端到端)
 
-> 纯机判项(`sa1/sa2/ap1/cs1` + forbidden 扫描)M0/M1 即可跑;`cv1` 是 `python_assert`,按 §4.5 属 M2 沙箱后端——M0/M1 临时降级为 `contains`/`regex_match` 等价检查,直到沙箱 backend 接入后再换回 `python_assert`。
+> 纯机判项(`sa1/sa2/ap1/cs1` + forbidden 扫描)M0/M1 即可跑;`cv1` 是 `python_assert`,按 §4.5 属 M2 沙箱后端。当前实现已从 M0/M1 的 `contains`/`regex_match` 降级检查切回受限只读 `python_assert`。
 
 ```text
 task_input = {raw_signature:"def has_close_elements(numbers: List[float], threshold: float) -> bool",
@@ -1396,7 +1396,7 @@ task_input = {raw_signature:"def has_close_elements(numbers: List[float], thresh
 3. code_synthesizer ← raw_signature+parsed_spec+approach
                                            gate: cs1(def 正则)✓ forbidden(无 import os)✓
 4. code_verifier  ← candidate_code+parsed_spec
-                                           gate: cv1(regex 等价机判;M2 可换 python_assert 沙箱)✓ → final_code, passed=True
+                                           gate: cv1(python_assert 受限只读表达式)✓ → final_code, passed=True
 → store.final_output(swarm) = {final_code, passed:True}   # has_close_elements 端到端 PASS
 ```
 

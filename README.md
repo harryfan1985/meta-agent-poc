@@ -18,7 +18,7 @@
 
 ## 当前状态
 
-**M0/M1 + opencode 对接 + 可观测 + M2 thin pipeline 已落地**(`src/meta_agent/`,144 测试,覆盖约 94%,确定性测试不依赖真实 LLM):
+**M0/M1 + opencode 对接 + 可观测 + M2 thin pipeline 已落地**(`src/meta_agent/`,145 测试,覆盖约 94%,确定性测试不依赖真实 LLM):
 
 | 里程碑 | 内容 | 状态 |
 |---|---|---|

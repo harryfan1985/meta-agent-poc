@@ -21,7 +21,7 @@ from meta_agent.schemas import (
     VerificationCriteria,
 )
 
-# code_verifier 的代表性输入需含目标函数,否则 cv1 regex 失败(真实 M2 由 planner 提供)
+# code_verifier 的代表性输入需含目标函数,否则 cv1 python_assert 失败(真实 M2 由 planner 提供)
 SAMPLE_INPUTS = {
     "spec_analyzer": dict(TASK_INPUT_EXAMPLE),
     "code_verifier": {"candidate_code": CANDIDATE_CODE, "parsed_spec": {}},

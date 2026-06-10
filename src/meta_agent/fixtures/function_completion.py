@@ -1,13 +1,14 @@
 """Running example(设计文档附录 A):function-completion 4-agent swarm。
 
 M0 用 fixture(确定性 handler)模拟四个 agent,验证 Coordinator/ContextStore/
-DAG/RuntimeGate 机判全链路。也提供错误注入变体,供 M1 归因测试。
+DAG/RuntimeGate 机判全链路。M2 起 cv1 使用受限 python_assert 后端。
+也提供错误注入变体,供 M1 归因测试。
 
-设计发现(已反馈,见 commit / 设计文档待修):附录 A 给 spec_analyzer 的
+设计发现(已反馈到设计文档):附录 A 曾给 spec_analyzer 的
 forbidden_patterns=["def ", "return ["],但该节点会**透传 raw_signature**(其值
 形如 "def has_close_elements(...)",天然含 "def "),全输出扫描会误命中。这暴露
 "forbidden_patterns 扫描透传字段会假阳性"——根因是 forbidden 应**字段限定**或
-不扫透传字段。M0 fixture 暂用 ["```"](禁代码块)规避,设计层修法另议。
+不扫透传字段。当前 fixture 用 ["```"](禁代码块)规避。
 """
 from __future__ import annotations
 
@@ -220,13 +221,12 @@ def build_plan() -> SwarmPlan:
         verification_criteria=VerificationCriteria(
             behavioral_assertions=["final_code 行为满足 parsed_spec 全部 edge_cases"],
             machine_assertions=[
-                # M0/M1:cv1 用 regex(附录 A 原为 python_assert;沙箱 backend 推迟到 M2)
                 AssertionSpec(
                     assertion_id="cv1",
-                    kind="regex_match",
+                    kind="python_assert",
                     target_path="/final_code",
-                    expression=r"def\s+has_close_elements",
-                    description="定稿必须含目标函数",
+                    expression="'def has_close_elements' in value",
+                    description="定稿必须含目标函数(受限只读表达式)",
                 )
             ],
             forbidden_patterns=["import os", "subprocess"],
