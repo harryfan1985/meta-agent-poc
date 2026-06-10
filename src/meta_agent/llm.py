@@ -71,6 +71,38 @@ def generate_validated(
     )
 
 
+def generate_model(backend, system: str, user: dict, model_cls, *, max_retries: int = 2):
+    """生成并校验为 Pydantic 模型实例(嵌套模型用此,比裸 jsonschema 稳)。
+    校验失败带错重试;仍不过 surface。构造期 Stage 1/2/3 用它。"""
+    from pydantic import ValidationError
+
+    schema = model_cls.model_json_schema()
+    last = ""
+    attempt_user = dict(user)
+    for _ in range(max_retries + 1):
+        out = backend.generate(system, attempt_user, schema)
+        try:
+            return model_cls.model_validate(out)
+        except ValidationError as e:
+            last = str(e)
+            attempt_user = {**user, "_validation_feedback": last}
+    raise SurfaceFailure(
+        f"structured generation failed validation for {model_cls.__name__}",
+        gate_result=GateResult(
+            ok=False,
+            failure_type=FailureType.SPEC_ADHERENCE,
+            feedback=[
+                StructuredFeedback(
+                    subtype=FailureSubtype.SCHEMA_VIOLATION.value,
+                    evidence=last[:500],
+                    expected=f"valid {model_cls.__name__}",
+                    actionable_fix="修正模型输出或 prompt/后端",
+                )
+            ],
+        ),
+    )
+
+
 class TemplateAgent:
     """执行期 prompt_template agent:合成系统提示 + 输出 schema → 调 StructuredLLM。
     run(message, history) -> dict(已校验 output_schema)。"""

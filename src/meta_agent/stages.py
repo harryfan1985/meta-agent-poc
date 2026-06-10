@@ -1,0 +1,68 @@
+"""构造期 Stage 1/2/3 薄实现 + default_stages 装配(§3)。
+
+每个 Stage 是 StructuredLLM 接缝上的薄包装:prompt 进、Pydantic 模型出(校验+重试)。
+单测用 StubStructuredLLM 确定性驱动;真实 prompt 调优属 [eval]。
+Stage 4 用 codegen.prompt_template_codegen(确定性),Stage 5 用 ConstructionVerifier。
+"""
+from __future__ import annotations
+
+from .codegen import prompt_template_codegen
+from .construct import Stages
+from .construction_verifier import ConstructionVerifier
+from .llm import generate_model
+from .schemas import ParsedIntent, SwarmPlan
+
+_INTENT_SYS = (
+    "Compile the natural-language task into a structured intent. "
+    "Output ONLY JSON matching ParsedIntent. Do not solve the task. "
+    "Constraints must be atomic and checkable."
+)
+
+_PLAN_SYS = (
+    "Decompose the task into a small DAG (typically 4 agents) of AgentSpecs. "
+    "Each spec needs role, io_contract (typed input/output fields), dependencies, "
+    "and non-empty verification_criteria (>=1 behavioral assertion, >=1 forbidden pattern). "
+    "Downstream input fields must trace to some upstream output field. Output ONLY JSON matching SwarmPlan."
+)
+
+
+class IntentParser:
+    """Stage 1:NL task -> ParsedIntent。"""
+
+    def __init__(self, backend):
+        self.backend = backend
+
+    def parse(self, task: str) -> ParsedIntent:
+        return generate_model(self.backend, _INTENT_SYS, {"task": task}, ParsedIntent)
+
+
+class SwarmPlanner:
+    """Stage 2:ParsedIntent -> SwarmPlan(编译器大脑)。"""
+
+    def __init__(self, backend):
+        self.backend = backend
+
+    def plan(self, parsed: ParsedIntent) -> SwarmPlan:
+        return generate_model(self.backend, _PLAN_SYS, {"intent": parsed.model_dump()}, SwarmPlan)
+
+
+class GroundingResearcher:
+    """Stage 3:定向检索回填 grounding。M2 默认 pass-through(纯推理 agent 无需 grounding)。
+    真实 web_search 接入属 [eval]。"""
+
+    def __init__(self, backend=None):
+        self.backend = backend
+
+    def ground(self, plan: SwarmPlan) -> SwarmPlan:
+        return plan
+
+
+def default_stages(backend, loader, sample_inputs: dict | None = None) -> Stages:
+    """把 Stage 1/2/3(LLM 接缝)+ Stage 4(确定性模板化)+ Stage 5(验证器)装成 Stages。"""
+    return Stages(
+        parse=IntentParser(backend).parse,
+        plan=SwarmPlanner(backend).plan,
+        ground=GroundingResearcher(backend).ground,
+        codegen=prompt_template_codegen,
+        verify=ConstructionVerifier(loader, sample_inputs=sample_inputs).verify,
+    )
