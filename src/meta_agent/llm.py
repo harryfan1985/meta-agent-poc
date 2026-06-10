@@ -45,6 +45,7 @@ class StructuredLLMConfig:
     temperature: float = 0.0
     timeout: float = 60.0
     api_key_env: str | None = None
+    base_url: str | None = None
 
 
 def _model_failure(reason: str, subtype: str, evidence: str = "") -> SurfaceFailure:
@@ -220,6 +221,7 @@ class OpenAIStructuredLLM:
         temperature: float = 0.0,
         timeout: float = 60.0,
         api_key_env: str = "OPENAI_API_KEY",
+        base_url: str | None = None,
         client: Any = None,
     ):
         self.model = model
@@ -227,6 +229,7 @@ class OpenAIStructuredLLM:
         self.temperature = temperature
         self.timeout = timeout
         self.api_key_env = api_key_env
+        self.base_url = base_url
         self.client = client
 
     def _client(self):
@@ -240,7 +243,10 @@ class OpenAIStructuredLLM:
                 "model_backend_error",
                 'install optional extra: pip install -e ".[openai]"',
             ) from e
-        self.client = openai.OpenAI(api_key=_get_api_key(self.api_key_env), timeout=self.timeout)
+        kwargs = {"api_key": _get_api_key(self.api_key_env), "timeout": self.timeout}
+        if self.base_url:
+            kwargs["base_url"] = self.base_url
+        self.client = openai.OpenAI(**kwargs)
         return self.client
 
     def generate(self, system: str, user: dict, json_schema: dict) -> dict:
@@ -306,6 +312,7 @@ def create_structured_llm(
     temperature: float = 0.0,
     timeout: float = 60.0,
     api_key_env: str | None = None,
+    base_url: str | None = None,
     client: Any = None,
 ) -> StructuredLLM:
     if not model:
@@ -326,6 +333,7 @@ def create_structured_llm(
             temperature=temperature,
             timeout=timeout,
             api_key_env=api_key_env or "OPENAI_API_KEY",
+            base_url=base_url,
             client=client,
         )
     raise ValueError(f"unknown structured LLM provider: {provider!r}")

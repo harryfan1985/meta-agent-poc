@@ -162,6 +162,12 @@ def test_provider_factory_creates_expected_adapters():
         create_structured_llm("other", "m")  # type: ignore[arg-type]
 
 
+def test_openai_factory_preserves_compatible_base_url():
+    backend = create_structured_llm("openai", "local-model", base_url="http://localhost:8000/v1")
+    assert isinstance(backend, OpenAIStructuredLLM)
+    assert backend.base_url == "http://localhost:8000/v1"
+
+
 def test_generate_validated_still_performs_project_schema_check():
     backend = AnthropicStructuredLLM(
         "claude-test",
@@ -211,6 +217,26 @@ def test_openai_missing_api_key_surfaces_clear_error(monkeypatch):
         backend.generate("sys", {}, SCHEMA)
     assert ei.value.gate_result.feedback[0].subtype == "model_backend_error"
     assert "OPENAI_API_KEY" in ei.value.gate_result.feedback[0].evidence
+
+
+def test_openai_compatible_base_url_passed_to_sdk(monkeypatch):
+    captured = {}
+
+    class FakeOpenAIModule:
+        class OpenAI:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+                self.responses = _OpenAIResponses(
+                    response={"status": "completed", "output": [{"content": [{"text": '{"answer": 10}'}]}]}
+                )
+
+    monkeypatch.setitem(sys.modules, "openai", FakeOpenAIModule)
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    backend = OpenAIStructuredLLM("local-model", base_url="http://localhost:8000/v1")
+
+    assert backend.generate("sys", {}, SCHEMA) == {"answer": 10}
+    assert captured["api_key"] == "test-key"
+    assert captured["base_url"] == "http://localhost:8000/v1"
 
 
 def test_missing_sdk_surfaces_clear_error(monkeypatch):

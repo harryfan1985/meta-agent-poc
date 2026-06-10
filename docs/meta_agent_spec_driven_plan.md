@@ -1018,7 +1018,7 @@ def classify(spec_id, gate, store, swarm):
 | 层 | 选择 | 说明 |
 |---|---|---|
 | 编排语言 | Python 3.11+ | 【工程补全】引擎与生成模块同语言最省事;artifact 可为 fixture/prompt/python_module/external_agent 四形态 |
-| LLM 后端 | `StructuredLLM` provider adapter,Anthropic/OpenAI 可插拔 | **【论文】** 框架 executor-agnostic;论文用 GPT-4o-mini 做主对比、Claude Sonnet 4.6 把均分从 82.7 提到 87.9。M2 已把真实模型入口收敛到 `generate(system,user,json_schema)->dict`;各组件(planner/codegen/verifier/executor)可分别配模型 |
+| LLM 后端 | `StructuredLLM` provider adapter,Anthropic/OpenAI/OpenAI-compatible URL 可插拔 | **【论文】** 框架 executor-agnostic;论文用 GPT-4o-mini 做主对比、Claude Sonnet 4.6 把均分从 82.7 提到 87.9。M2 已把真实模型入口收敛到 `generate(system,user,json_schema)->dict`;各组件(planner/codegen/verifier/executor)可分别配模型 |
 | 验证器档位 | **【工程补全】** 独立于生成器,默认便宜档(Haiku 级)| 借鉴 MAV 的 weak-to-strong:用一组**弱/便宜**模型组面板投票即可提升强生成器(§3.7);生成走强档、验证走便宜档,直接压低"验证开销大"风险(§10)|
 | 结构化输出 | provider strict schema + 本项目二次校验 | Anthropic 走 synthetic strict tool call,OpenAI 走 strict JSON Schema structured outputs;所有 Stage 产物仍按 Pydantic/jsonschema 二次校验,解析失败即重生成 |
 | 代码沙箱 | **【工程补全】** gVisor / Firecracker microVM 或容器 + seccomp | 论文执行期把验证过的代码"在 sandboxed subprocess 跑隐藏单测";本方案要求强隔离 + 禁网(除显式 web_search)+ 超时 + 资源上限 |

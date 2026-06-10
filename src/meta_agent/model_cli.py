@@ -29,6 +29,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run a real-model M2 construct+execute smoke test.")
     parser.add_argument("--provider", choices=["anthropic", "openai"], required=True)
     parser.add_argument("--model", required=True)
+    parser.add_argument("--base-url", help="OpenAI-compatible base URL, e.g. http://localhost:8000/v1")
     parser.add_argument("--task", required=True)
     parser.add_argument("--task-input-json", type=_json_arg)
     parser.add_argument("--max-tokens", type=int, default=4096)
@@ -45,6 +46,7 @@ def main(argv: list[str] | None = None) -> int:
         temperature=args.temperature,
         timeout=args.timeout,
         api_key_env=args.api_key_env,
+        base_url=args.base_url,
     )
     loader = ArtifactLoader(structured_llm=backend)
     stages = default_stages(backend, loader)

@@ -56,16 +56,18 @@ def test_model_cli_runs_construct_execute_smoke(monkeypatch, tmp_path, capsys):
 
     trace_path = tmp_path / "trace.jsonl"
     rc = model_cli.main([
-        "--provider", "anthropic",
-        "--model", "claude-test",
+        "--provider", "openai",
+        "--model", "local-model",
+        "--base-url", "http://localhost:8000/v1",
         "--task", "do work",
         "--task-input-json", '{"x": "v"}',
         "--trace-jsonl", str(trace_path),
     ])
 
     assert rc == 0
-    assert calls["provider"] == "anthropic"
-    assert calls["model"] == "claude-test"
+    assert calls["provider"] == "openai"
+    assert calls["model"] == "local-model"
+    assert calls["kwargs"]["base_url"] == "http://localhost:8000/v1"
     assert calls["execute"] == ("swarm", {"x": "v"})
     payload = json.loads(capsys.readouterr().out)
     assert payload == {"output": {"answer": "ok"}, "trace_jsonl": str(trace_path)}

@@ -18,7 +18,7 @@
 
 ## 当前状态
 
-**M0/M1 + opencode 对接 + 可观测 + M2 thin pipeline 已落地**(`src/meta_agent/`,130 测试,覆盖约 94%,确定性测试不依赖真实 LLM):
+**M0/M1 + opencode 对接 + 可观测 + M2 thin pipeline 已落地**(`src/meta_agent/`,132 测试,覆盖约 94%,确定性测试不依赖真实 LLM):
 
 | 里程碑 | 内容 | 状态 |
 |---|---|---|
@@ -27,7 +27,7 @@
 | **opencode** | `OpenCodeAdapter`(control-plane 执行后端,产物经 RuntimeGate) | ✅ |
 | **可观测** | `TraceEvent` 接入执行期与 external agent adapter(JSONL/回放数据底座) | ✅ |
 | **M2 thin** | `construct()` + Stage 1/2/3 StructuredLLM 接缝 + Stage 4 `prompt_template` + Stage 5 `ConstructionVerifier` | ✅ |
-| **M2 eval** | Anthropic/OpenAI `StructuredLLM` adapter 已接入;真实 task-level 成功率与失败路由评测待跑 | ⏭️ |
+| **M2 eval** | Anthropic/OpenAI/OpenAI-compatible URL `StructuredLLM` adapter 已接入;真实 task-level 成功率与失败路由评测待跑 | ⏭️ |
 | **M3** | verifier 后端栈 / 校准 / claim-evidence / mutation | ⏭️ |
 
 > 快速跑通:`pip install -e ".[dev]" && pytest`。
@@ -45,6 +45,16 @@ meta-agent-model-eval \
   --model "$META_AGENT_ANTHROPIC_MODEL" \
   --task "Build a small swarm for a simple coding task" \
   --task-input-json '{"task":"say hello"}'
+```
+
+OpenAI-compatible provider 复用 `openai` adapter,只需指定兼容服务的 base URL:
+
+```bash
+meta-agent-model-eval \
+  --provider openai \
+  --model local-model \
+  --base-url http://localhost:8000/v1 \
+  --task "Build a small swarm for a simple coding task"
 ```
 
 `StructuredLLM` provider adapter 只负责把 `system + user + JSON Schema` 变成 dict;输出仍会经过本项目自己的 `jsonschema`/Pydantic/RuntimeGate 校验。
