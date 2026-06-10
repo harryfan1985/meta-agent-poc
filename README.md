@@ -50,10 +50,15 @@ meta-agent-model-eval \
 OpenAI-compatible provider 复用 `openai` adapter,只需指定兼容服务的 base URL:
 
 ```bash
+export OPENAI_API_KEY=dummy-or-real
+export META_AGENT_OPENAI_MODEL=local-model
+export META_AGENT_OPENAI_BASE_URL=http://localhost:8000/v1
+META_AGENT_RUN_PROVIDER_EVAL=1 pytest tests/eval -q
+
 meta-agent-model-eval \
   --provider openai \
-  --model local-model \
-  --base-url http://localhost:8000/v1 \
+  --model "$META_AGENT_OPENAI_MODEL" \
+  --base-url "$META_AGENT_OPENAI_BASE_URL" \
   --task "Build a small swarm for a simple coding task"
 ```
 

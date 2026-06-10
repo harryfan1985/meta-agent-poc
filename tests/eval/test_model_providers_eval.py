@@ -19,13 +19,13 @@ SMOKE_SCHEMA = {
 }
 
 
-def _provider_backend(provider: str, model_env: str, api_key_env: str):
+def _provider_backend(provider: str, model_env: str, api_key_env: str, base_url_env: str | None = None):
     if os.getenv("META_AGENT_RUN_PROVIDER_EVAL") != "1":
         pytest.skip("set META_AGENT_RUN_PROVIDER_EVAL=1 to run real provider smoke tests")
     model = os.getenv(model_env)
     if not (os.getenv(api_key_env) and model):
         pytest.skip(f"set {api_key_env} and {model_env} to run this provider smoke test")
-    return create_structured_llm(provider, model)
+    return create_structured_llm(provider, model, base_url=os.getenv(base_url_env) if base_url_env else None)
 
 
 def test_anthropic_schema_generation_smoke():
@@ -35,7 +35,7 @@ def test_anthropic_schema_generation_smoke():
 
 
 def test_openai_schema_generation_smoke():
-    backend = _provider_backend("openai", "META_AGENT_OPENAI_MODEL", "OPENAI_API_KEY")
+    backend = _provider_backend("openai", "META_AGENT_OPENAI_MODEL", "OPENAI_API_KEY", "META_AGENT_OPENAI_BASE_URL")
     out = backend.generate("Return the integer 42.", {"request": "answer"}, SMOKE_SCHEMA)
     assert out == {"answer": 42}
 
