@@ -27,6 +27,7 @@ from .schemas import (
     SurfaceFailure,
     SwarmPlan,
 )
+from .dag import topo_order
 from .trace import NullTracer, make_event
 from .validation import assert_valid_plan
 
@@ -114,9 +115,11 @@ def _find_spec(plan: SwarmPlan, spec_id: str) -> AgentSpec:
 
 def _build_artifacts(plan: SwarmPlan, stages: Stages, budget: Budget, tracer, tool_registry=None) -> tuple[SwarmPlan, dict]:
     artifacts: dict[str, AgentArtifact] = {}
-    spec_index = 0
-    while spec_index < len(plan.specs):
-        spec = plan.specs[spec_index]
+    # 拓扑序构造:上游先于下游验证,使 Stage 5 行为 dry-run 能拿到上游样例产出
+    # (preflight 已保证无环/坏边)。
+    order = topo_order([s.spec_id for s in plan.specs], plan.dag_edges)
+    for spec_id in order:
+        spec = _find_spec(plan, spec_id)
         feedback: list = []
         gate: Optional[GateResult] = None
         for _pass in range(1, budget.max_construct_passes + 1):
@@ -144,5 +147,4 @@ def _build_artifacts(plan: SwarmPlan, stages: Stages, budget: Budget, tracer, to
                 f"construct: passes exhausted for {spec.spec_id}",
                 spec_id=spec.spec_id, gate_result=gate,
             )
-        spec_index += 1
     return plan, artifacts

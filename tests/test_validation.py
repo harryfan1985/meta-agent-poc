@@ -2,7 +2,7 @@ import pytest
 
 from meta_agent.coordinator import execute
 from meta_agent.fixtures.function_completion import TASK_INPUT_EXAMPLE, build_swarm
-from meta_agent.schemas import AssertionSpec, ConstitutionRule, SurfaceFailure, ToolDefinition
+from meta_agent.schemas import AssertionSpec, ConstitutionRule, DagEdge, SurfaceFailure, ToolDefinition
 from meta_agent.tools import ToolRegistry
 from meta_agent.validation import validate_plan
 
@@ -30,6 +30,13 @@ def test_execute_rejects_plan_dependency_dag_drift_before_running():
         execute(swarm, dict(TASK_INPUT_EXAMPLE))
     assert ei.value.gate_result.failure_type.value == "contract"
     assert calls["n"] == 0
+
+
+def test_plan_rejects_cyclic_dag():
+    swarm = build_swarm()
+    swarm.plan.dag_edges.append(DagEdge(from_spec="code_verifier", to_spec="spec_analyzer"))
+    issues = validate_plan(swarm.plan)
+    assert any("cycle" in issue for issue in issues)
 
 
 def test_plan_rejects_required_tool_not_declared_in_spec_tools():

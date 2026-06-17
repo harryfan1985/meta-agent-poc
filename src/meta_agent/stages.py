@@ -65,12 +65,18 @@ class GroundingResearcher:
         return plan
 
 
-def default_stages(backend, loader, sample_inputs: dict | None = None) -> Stages:
-    """把 Stage 1/2/3(LLM 接缝)+ Stage 4(确定性模板化)+ Stage 5(验证器)装成 Stages。"""
+def default_stages(backend, loader, task_input: dict | None = None,
+                   sample_inputs: dict | None = None) -> Stages:
+    """把 Stage 1/2/3(LLM 接缝)+ Stage 4(确定性模板化)+ Stage 5(验证器)装成 Stages。
+
+    task_input:swarm 级样例输入,Stage 5 行为验证按 DAG 把它喂给入口节点,
+    中游节点改用上游样例产出。sample_inputs 为显式 per-spec 覆盖(可选)。
+    """
     return Stages(
         parse=IntentParser(backend).parse,
         plan=SwarmPlanner(backend).plan,
         ground=GroundingResearcher(backend).ground,
         codegen=prompt_template_codegen,
-        verify=ConstructionVerifier(loader, sample_inputs=sample_inputs).verify,
+        verify=ConstructionVerifier(loader, task_input=task_input,
+                                    sample_inputs=sample_inputs).verify,
     )

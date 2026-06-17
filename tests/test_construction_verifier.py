@@ -63,6 +63,39 @@ def test_wildcard_sample_input_is_used_when_spec_sample_missing():
     assert gate.ok is True
 
 
+def test_midstream_node_gathers_from_upstream_sample_output():
+    """核心:中游节点的代表性输入来自上游样例产出(而非全局 task_input)。"""
+    plan = build_plan()
+    sa = next(s for s in plan.specs if s.spec_id == "spec_analyzer")
+    ap = next(s for s in plan.specs if s.spec_id == "algo_planner")
+    v = ConstructionVerifier(ArtifactLoader(fixture_registry=FIXTURES),
+                             task_input=dict(TASK_INPUT_EXAMPLE))
+    # 入口节点先验 → 产出进入累积器
+    assert v.verify(_fixture_artifact("spec_analyzer", "fx_spec_analyzer"), sa).ok is True
+    # algo_planner 无显式 sample:parsed_spec 应取自 spec_analyzer 的样例产出
+    gate = v.verify(_fixture_artifact("algo_planner", "fx_algo_planner"), ap)
+    assert gate.ok is True
+    assert v._sample_outputs["algo_planner"]["approach"]["algorithm"] == "pairwise_compare"
+
+
+def test_entry_node_falls_back_to_representative_input():
+    """无 task_input / sample 时,入口节点用按类型生成的最小输入。"""
+    plan = build_plan()
+    sa = next(s for s in plan.specs if s.spec_id == "spec_analyzer")
+    gate = ConstructionVerifier(ArtifactLoader(fixture_registry=FIXTURES)).verify(
+        _fixture_artifact("spec_analyzer", "fx_spec_analyzer"), sa)
+    assert gate.ok is True
+
+
+def test_midstream_typemin_fallback_when_upstream_missing():
+    """中游节点在上游样例缺失时用类型最小值兜底,行为运行不中断。"""
+    plan = build_plan()
+    ap = next(s for s in plan.specs if s.spec_id == "algo_planner")
+    gate = ConstructionVerifier(ArtifactLoader(fixture_registry=FIXTURES)).verify(
+        _fixture_artifact("algo_planner", "fx_algo_planner"), ap)
+    assert gate.ok is True  # parsed_spec 用 {} 兜底,fixture 仍产出合法 approach
+
+
 def test_behavioral_fail_routes_typed():
     plan = build_plan()
     spec = next(s for s in plan.specs if s.spec_id == "spec_analyzer")

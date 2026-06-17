@@ -32,9 +32,10 @@ def test_model_cli_runs_construct_execute_smoke(monkeypatch, tmp_path, capsys):
         calls["kwargs"] = kwargs
         return "backend"
 
-    def fake_default_stages(backend, loader, sample_inputs=None):
+    def fake_default_stages(backend, loader, task_input=None, sample_inputs=None):
         calls["stages_backend"] = backend
         calls["stages_loader"] = loader
+        calls["task_input"] = task_input
         calls["sample_inputs"] = sample_inputs
         return "stages"
 
@@ -70,7 +71,7 @@ def test_model_cli_runs_construct_execute_smoke(monkeypatch, tmp_path, capsys):
     assert calls["model"] == "local-model"
     assert calls["kwargs"]["base_url"] == "http://localhost:8000/v1"
     assert calls["execute"] == ("swarm", {"x": "v"})
-    assert calls["sample_inputs"] == {"*": {"x": "v"}}
+    assert calls["task_input"] == {"x": "v"}
     payload = json.loads(capsys.readouterr().out)
     assert payload == {"output": {"answer": "ok"}, "trace_jsonl": str(trace_path)}
     assert len(trace_path.read_text(encoding="utf-8").splitlines()) == 2
