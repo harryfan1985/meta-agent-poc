@@ -8,6 +8,7 @@ from __future__ import annotations
 from collections import Counter
 from typing import Protocol
 
+from .dag import DagCycleError, topo_order
 from .schemas import (
     FailureSubtype,
     FailureType,
@@ -43,11 +44,20 @@ def validate_plan(plan: SwarmPlan, tool_registry: ToolRegistryLike | None = None
 
     known = set(spec_ids)
     predecessors: dict[str, set[str]] = {spec_id: set() for spec_id in spec_ids}
+    edges_ref_ok = True
     for edge in plan.dag_edges:
         if edge.from_spec not in known or edge.to_spec not in known:
             issues.append(f"edge references unknown node: {edge.from_spec} -> {edge.to_spec}")
+            edges_ref_ok = False
             continue
         predecessors[edge.to_spec].add(edge.from_spec)
+
+    # 环检测:仅在边引用合法时做,避免与 unknown-node 报告重复;环属结构性缺陷。
+    if edges_ref_ok:
+        try:
+            topo_order(spec_ids, plan.dag_edges)
+        except DagCycleError as e:
+            issues.append(f"dag has a cycle: {e}")
 
     for spec in plan.specs:
         declared = set(spec.dependencies)

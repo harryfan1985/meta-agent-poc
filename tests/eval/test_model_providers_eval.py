@@ -55,7 +55,7 @@ def test_m2_construct_execute_smoke():
     backend = _m2_backend()
     task_input = {"task": "say hello"}
     loader = ArtifactLoader(structured_llm=backend)
-    stages = default_stages(backend, loader, sample_inputs={"*": task_input})
+    stages = default_stages(backend, loader, task_input=task_input)
 
     task = (
         "Build a minimal swarm that reads input field `task` and returns output field "

@@ -85,9 +85,36 @@ def _static_python_import_check(module_path: str, forbidden_patterns: list) -> l
 
 
 class ConstructionVerifier:
-    def __init__(self, loader, sample_inputs: Optional[dict] = None):
+    def __init__(self, loader, task_input: Optional[dict] = None,
+                 sample_inputs: Optional[dict] = None):
         self.loader = loader  # ArtifactLoader
-        self.sample_inputs = sample_inputs or {}  # spec_id -> message; "*" = default message
+        self.task_input = task_input or {}  # swarm 级样例输入(入口节点 & 透传源)
+        self.sample_inputs = sample_inputs or {}  # 显式 per-spec 覆盖;"*" = 入口默认
+        # 行为验证的拓扑 dry-run 累积:spec_id -> 该节点通过 gate 的实际样例产出,
+        # 供下游按 DAG 组装代表性输入(镜像执行期 gather_inputs:中游只能取直接依赖产出)。
+        self._sample_outputs: dict[str, dict] = {}
+
+    def _gather_sample_input(self, spec: AgentSpec) -> dict:
+        # 1) 显式 per-spec 覆盖优先
+        if spec.spec_id in self.sample_inputs:
+            return dict(self.sample_inputs[spec.spec_id])
+        deps = spec.dependencies
+        # 2) 入口节点:swarm task_input(或 "*" 默认 / 类型最小值兜底)
+        if not deps:
+            base = self.task_input or self.sample_inputs.get("*")
+            return dict(base) if base else representative_input(spec)
+        # 3) 中游节点:镜像 gather_inputs——按字段从直接依赖的样例产出取;
+        #    上游样例缺该字段时用类型最小值兜底,保证行为运行不因缺字段中断。
+        msg: dict = {}
+        for field, fs in spec.io_contract.input_schema.items():
+            value = None
+            for d in deps:
+                out = self._sample_outputs.get(d)
+                if out and field in out:
+                    value = out[field]
+                    break
+            msg[field] = value if value is not None else _sample_value(fs)
+        return msg
 
     def verify(self, artifact: AgentArtifact, spec: AgentSpec) -> GateResult:
         # 1) 静态:加载成 callable
@@ -120,8 +147,8 @@ class ConstructionVerifier:
                 return GateResult(ok=False, failure_type=FailureType.SPEC_ADHERENCE,
                                   feedback=import_fb)
 
-        # 2) 行为:代表性输入 → 跑 → 复用 RuntimeGate
-        msg = self.sample_inputs.get(spec.spec_id) or self.sample_inputs.get("*") or representative_input(spec)
+        # 2) 行为:按 DAG 组装代表性输入(中游取上游样例产出)→ 跑 → 复用 RuntimeGate
+        msg = self._gather_sample_input(spec)
         try:
             output = agent(msg, [])
         except Exception as e:  # noqa: BLE001
@@ -134,4 +161,8 @@ class ConstructionVerifier:
                          f"输出非 dict:{type(output).__name__}",
                          "返回满足 output_schema 的 dict")
 
-        return RuntimeGate.check(output, spec, message=msg, policy=None)
+        result = RuntimeGate.check(output, spec, message=msg, policy=None)
+        if result.ok:
+            # 仅通过 gate 的产出才向下游传播(与执行期一致),供后续节点组装输入
+            self._sample_outputs[spec.spec_id] = output
+        return result

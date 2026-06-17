@@ -50,7 +50,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     loader = ArtifactLoader(structured_llm=backend)
     task_input = args.task_input_json if args.task_input_json is not None else {"task": args.task}
-    stages = default_stages(backend, loader, sample_inputs={"*": task_input})
+    stages = default_stages(backend, loader, task_input=task_input)
 
     if args.trace_jsonl:
         trace_path = Path(args.trace_jsonl)
