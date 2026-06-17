@@ -66,6 +66,15 @@ def _model_failure(reason: str, subtype: str, evidence: str = "") -> SurfaceFail
     )
 
 
+def _failure_subtype(exc: SurfaceFailure) -> str | None:
+    """从 SurfaceFailure 取首条 feedback 的 subtype,用于路由判定。"""
+    gate = getattr(exc, "gate_result", None)
+    feedback = getattr(gate, "feedback", None) if gate is not None else None
+    if feedback:
+        return getattr(feedback[0], "subtype", None)
+    return None
+
+
 def _is_timeout_error(exc: Exception) -> bool:
     name = type(exc).__name__.lower()
     return isinstance(exc, TimeoutError) or "timeout" in name or "timedout" in name
@@ -80,6 +89,25 @@ def _get_api_key(env_name: str) -> str:
             f"environment variable {env_name!r} is not set",
         )
     return key
+
+
+def _strip_json_text(text: str) -> str:
+    """容忍 chatty/reasoning 模型:剥离 ```json 围栏与前后散文,取最外层 JSON 对象。
+    仅用于 json_object 降级路径;不影响原生结构化输出的 schema_violation 语义。"""
+    if not isinstance(text, str):
+        return text
+    s = text.strip()
+    if s.startswith("```"):
+        s = s.split("\n", 1)[1] if "\n" in s else s[3:]
+        if s.rstrip().endswith("```"):
+            s = s.rstrip()[:-3]
+        s = s.strip()
+    if s.startswith("{") and s.endswith("}"):
+        return s
+    start, end = s.find("{"), s.rfind("}")
+    if start != -1 and end > start:
+        return s[start : end + 1]
+    return s
 
 
 def _coerce_dict(value: Any, *, reason: str) -> dict:
@@ -222,6 +250,7 @@ class OpenAIStructuredLLM:
         timeout: float = 60.0,
         api_key_env: str = "OPENAI_API_KEY",
         base_url: str | None = None,
+        structured_mode: str = "auto",  # auto | json_schema | json_object
         client: Any = None,
     ):
         self.model = model
@@ -230,6 +259,7 @@ class OpenAIStructuredLLM:
         self.timeout = timeout
         self.api_key_env = api_key_env
         self.base_url = base_url
+        self.structured_mode = structured_mode
         self.client = client
 
     def _client(self):
@@ -250,6 +280,49 @@ class OpenAIStructuredLLM:
         return self.client
 
     def generate(self, system: str, user: dict, json_schema: dict) -> dict:
+        if self.structured_mode == "json_object":
+            return self._generate_json_object(system, user, json_schema)
+        try:
+            return self._generate_native(system, user, json_schema)
+        except SurfaceFailure as e:
+            # auto 仅在"端点不支持原生 structured 这条传输"时降级(provider 的 400/404,
+            # subtype=model_backend_error),如 bitfun 的 json_schema 不可用。模型内容类失败
+            # (schema_violation / refusal / timeout / empty)是真实错误,必须如实 surface。
+            if self.structured_mode == "json_schema" or _failure_subtype(e) != "model_backend_error":
+                raise
+            return self._generate_json_object(system, user, json_schema)
+
+    def _generate_json_object(self, system: str, user: dict, json_schema: dict) -> dict:
+        """降级路径:chat.completions + json_object,把 schema 注入 prompt;
+        下游 generate_model/TemplateAgent 仍用 jsonschema 校验+重试。"""
+        client = self._client()
+        sys = (system or "") + (
+            "\n\nReturn ONLY a single JSON object conforming to this JSON Schema "
+            "(no prose, no markdown fences):\n" + json.dumps(json_schema, ensure_ascii=False)
+        )
+        try:
+            response = client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": sys},
+                    {"role": "user", "content": json.dumps(user, ensure_ascii=False)},
+                ],
+                max_tokens=self.max_tokens,
+                temperature=self.temperature,
+                response_format={"type": "json_object"},
+            )
+        except SurfaceFailure:
+            raise
+        except Exception as e:  # noqa: BLE001
+            if _is_timeout_error(e):
+                raise _model_failure("openai request timed out", "model_timeout", str(e)) from e
+            raise _model_failure("openai request failed", "model_backend_error", str(e)) from e
+        text = _extract_text_from_openai_chat(response)
+        if "refusal" in text.lower() and not text.strip().startswith("{"):
+            raise _model_failure("openai model refused", "model_refusal", text)
+        return _coerce_dict(_strip_json_text(text), reason="openai json_object output invalid")
+
+    def _generate_native(self, system: str, user: dict, json_schema: dict) -> dict:
         try:
             client = self._client()
             if hasattr(client, "responses"):
