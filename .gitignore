@@ -12,3 +12,8 @@ htmlcov/
 dist/
 build/
 .DS_Store
+
+# local provider creds (never commit)
+.env
+.env.local
+.env.*

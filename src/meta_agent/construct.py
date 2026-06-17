@@ -66,10 +66,26 @@ def construct(
 
     replans = 0
     while True:
-        plan = stages.plan(parsed)
-        assert_valid_plan(plan, tool_registry=tool_registry)  # registry.validate + constitution
-        plan = stages.ground(plan)
-        assert_valid_plan(plan, tool_registry=tool_registry)
+        try:
+            plan = stages.plan(parsed)
+            assert_valid_plan(plan, tool_registry=tool_registry)  # registry.validate + constitution
+            plan = stages.ground(plan)
+            assert_valid_plan(plan, tool_registry=tool_registry)
+        except SurfaceFailure as preflight_fail:
+            # 仅 contract 类(计划/DAG/constitution 预检)→ Stage 2 重规划;
+            # 其它(如 Stage1/2 模型失败)如实 surface。
+            ft = getattr(getattr(preflight_fail, "gate_result", None), "failure_type", None)
+            if ft != FailureType.CONTRACT:
+                raise
+            replans += 1
+            tracer.emit(make_event("recovery", phase="construct", stage="stage2_plan",
+                                   recovery_kind="structural",
+                                   payload={"reason": "preflight", "replan": replans}))
+            if replans > budget.max_replans:
+                tracer.emit(make_event("finish", phase="construct",
+                                       payload={"ok": False, "reason": "replans_exhausted"}))
+                raise
+            continue
         tracer.emit(make_event("start", phase="construct", stage="stage2_plan",
                                payload={"swarm": plan.swarm_name, "n_specs": len(plan.specs)}))
 

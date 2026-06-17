@@ -27,7 +27,7 @@
 | **opencode** | `OpenCodeAdapter`(control-plane 执行后端,产物经 RuntimeGate) | ✅ |
 | **可观测** | `TraceEvent` 接入执行期与 external agent adapter(JSONL/回放数据底座) | ✅ |
 | **M2 thin** | `construct()` + Stage 1/2/3 StructuredLLM 接缝 + Stage 4 `prompt_template` + Stage 5 `ConstructionVerifier` + 受限 `python_assert` 机判后端 | ✅ |
-| **M2 eval** | Anthropic/OpenAI/OpenAI-compatible URL `StructuredLLM` adapter 已接入;真实 task-level 成功率与失败路由评测待跑 | ⏭️ |
+| **M2 eval** | Anthropic/OpenAI/OpenAI-compatible URL `StructuredLLM` adapter 已接入;对 OpenAI 兼容 provider(bitfun,`json_object` 降级)实测通过 schema smoke(稳定)与 construct+execute 端到端 smoke;系统化 task-level 成功率与失败路由评测待跑 | 🟡 |
 | **M3** | verifier 后端栈 / 校准 / claim-evidence / mutation | ⏭️ |
 
 > 快速跑通:`pip install -e ".[dev]" && pytest`。

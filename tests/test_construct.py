@@ -78,6 +78,33 @@ def test_contract_triggers_replan():
     assert plan_calls[0] == 2  # contract → Stage 2 重规划一次
 
 
+def test_preflight_failure_triggers_replan():
+    plan_calls = [0]
+
+    def plan(pi):
+        plan_calls[0] += 1
+        p = build_plan()
+        if plan_calls[0] == 1:
+            p.specs[0].dependencies = ["nonexistent"]  # 预检 contract 失败 → 重规划
+        return p
+
+    swarm = construct("t", _stages(verify=lambda a, s: GateResult(ok=True), plan=plan))
+    assert plan_calls[0] == 2  # 预检失败 → Stage 2 重规划一次后成功
+    assert set(swarm.artifacts) == {"spec_analyzer", "algo_planner", "code_synthesizer", "code_verifier"}
+
+
+def test_preflight_replans_exhausted_surfaces():
+    def plan(pi):
+        p = build_plan()
+        p.specs[0].dependencies = ["nonexistent"]  # 始终非法 → 触顶
+        return p
+
+    with pytest.raises(SurfaceFailure) as ei:
+        construct("t", _stages(verify=lambda a, s: GateResult(ok=True), plan=plan),
+                  budget=Budget(max_replans=2))
+    assert "preflight" in str(ei.value).lower()
+
+
 def test_grounding_failure_reruns_grounding_then_retries():
     ground_calls = [0]
 

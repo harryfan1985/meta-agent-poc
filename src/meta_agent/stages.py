@@ -19,10 +19,18 @@ _INTENT_SYS = (
 )
 
 _PLAN_SYS = (
-    "Decompose the task into a small DAG (typically 4 agents) of AgentSpecs. "
+    "Decompose the task into a DAG of AgentSpecs using the FEWEST agents that cleanly "
+    "separate concerns (1-4; use a SINGLE agent when the task is atomic). "
     "Each spec needs role, io_contract (typed input/output fields), dependencies, "
     "and non-empty verification_criteria (>=1 behavioral assertion, >=1 forbidden pattern). "
-    "Downstream input fields must trace to some upstream output field. Output ONLY JSON matching SwarmPlan."
+    "Pick forbidden patterns that the agent output will never legitimately contain "
+    "(e.g. ``` code fences); never forbid content the spec must emit. "
+    "Each spec's `dependencies` MUST equal exactly the set of `from_spec` of the dag_edges "
+    "pointing to it (no more, no less). "
+    "Every spec input field MUST come from either the swarm task input or an upstream "
+    "spec's output field (verbatim field name). "
+    "Leave `constitution_rules` empty ([]); do not invent governance rules. "
+    "Output ONLY JSON matching SwarmPlan."
 )
 
 

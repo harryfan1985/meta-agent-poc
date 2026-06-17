@@ -153,6 +153,78 @@ def test_openai_invalid_json_surfaces_schema_violation():
     assert ei.value.gate_result.feedback[0].subtype == "model_schema_violation"
 
 
+class _RaisingResponses:
+    """模拟端点不支持原生 structured(如 bitfun 的 400 json_schema unavailable)。"""
+
+    def __init__(self, exc):
+        self.exc = exc
+        self.calls = []
+
+    def create(self, **kwargs):
+        self.calls.append(kwargs)
+        raise self.exc
+
+
+class _JsonObjectCompletions:
+    def __init__(self, content):
+        self.content = content
+        self.calls = []
+
+    def create(self, **kwargs):
+        self.calls.append(kwargs)
+        return {"choices": [{"message": {"content": self.content}}]}
+
+
+class _FallbackClient:
+    """native(responses)抛后端错误,chat.completions 提供 json_object 降级路径。"""
+
+    def __init__(self, native_exc=None, content='{"answer": 42}'):
+        self.responses = _RaisingResponses(native_exc or RuntimeError("400 response_format unavailable"))
+        self.chat = types.SimpleNamespace(completions=_JsonObjectCompletions(content))
+
+
+def test_openai_json_object_mode_calls_chat_completions_directly():
+    client = _FallbackClient()
+    backend = OpenAIStructuredLLM("deepseek-test", structured_mode="json_object", client=client)
+
+    assert backend.generate("sys", {}, SCHEMA) == {"answer": 42}
+    assert client.responses.calls == []  # native 完全跳过
+    call = client.chat.completions.calls[0]
+    assert call["response_format"] == {"type": "json_object"}
+    assert "JSON Schema" in call["messages"][0]["content"]  # schema 注入 system prompt
+
+
+def test_openai_auto_falls_back_to_json_object_on_backend_error():
+    client = _FallbackClient()
+    backend = OpenAIStructuredLLM("deepseek-test", client=client)  # 默认 structured_mode="auto"
+
+    assert backend.generate("sys", {"x": 1}, SCHEMA) == {"answer": 42}
+    assert client.responses.calls  # 先试 native
+    assert client.chat.completions.calls[0]["response_format"] == {"type": "json_object"}  # 再降级
+
+
+def test_openai_json_object_tolerates_markdown_fences():
+    """reasoning 模型常给 ```json 围栏;降级路径需剥离后再校验。"""
+    client = _FallbackClient(content='```json\n{"answer": 42}\n```')
+    backend = OpenAIStructuredLLM("deepseek-test", structured_mode="json_object", client=client)
+
+    assert backend.generate("sys", {}, SCHEMA) == {"answer": 42}
+
+
+def test_openai_auto_does_not_fall_back_on_genuine_model_error():
+    """模型内容类失败(schema_violation)必须如实 surface,绝不静默改传输重试。"""
+    client = _FallbackClient()
+    client.responses = _OpenAIResponses(
+        response={"status": "completed", "output": [{"content": [{"text": "nope"}]}]}
+    )
+    backend = OpenAIStructuredLLM("deepseek-test", client=client)
+
+    with pytest.raises(SurfaceFailure) as ei:
+        backend.generate("sys", {}, SCHEMA)
+    assert ei.value.gate_result.feedback[0].subtype == "model_schema_violation"
+    assert client.chat.completions.calls == []  # 未触发降级
+
+
 def test_provider_factory_creates_expected_adapters():
     assert isinstance(create_structured_llm("anthropic", "claude-test", client=_AnthropicClient()), AnthropicStructuredLLM)
     assert isinstance(create_structured_llm("openai", "gpt-test", client=_OpenAIClient()), OpenAIStructuredLLM)
