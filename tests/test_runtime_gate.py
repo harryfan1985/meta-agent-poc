@@ -157,6 +157,27 @@ def test_gate_contains_and_not_contains():
     assert bad.ok is False
 
 
+def test_gate_contains_with_nonstring_expected_does_not_raise():
+    """模型给出非串 expected(list)而目标是字符串:须归为 spec_adherence,绝不抛 TypeError。"""
+    c = AssertionSpec(assertion_id="c1", kind="contains", target_path="/answer", expected=["x"])
+    spec = _spec(machine_assertions=[c],
+                 out={"answer": FieldSpec(type="string", description="a")}, required_out=["answer"])
+    g = RuntimeGate.check({"answer": "hello world"}, spec)
+    assert g.ok is False
+    assert g.failure_type == FailureType.SPEC_ADHERENCE
+
+
+def test_gate_assertion_execution_error_is_attributed_not_raised():
+    """任何断言执行异常(如非法正则)都转成 typed spec_adherence/assertion_error,gate 永不抛。"""
+    a = AssertionSpec(assertion_id="boom", kind="regex_match", target_path="/answer", expression="(")
+    spec = _spec(machine_assertions=[a],
+                 out={"answer": FieldSpec(type="string", description="a")}, required_out=["answer"])
+    g = RuntimeGate.check({"answer": "x"}, spec)
+    assert g.ok is False
+    assert g.failure_type == FailureType.SPEC_ADHERENCE
+    assert any(f.subtype == "assertion_error" for f in g.feedback)
+
+
 def test_gate_jsonschema_subschema():
     sub = {"type": "object", "required": ["k"], "properties": {"k": {"type": "string"}}}
     a = AssertionSpec(assertion_id="js", kind="jsonschema", target_path="/meta", expected=sub)
