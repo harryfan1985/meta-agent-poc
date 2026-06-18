@@ -23,6 +23,7 @@ from .schemas import (
     FieldSpec,
     GateResult,
     StructuredFeedback,
+    VerificationPolicy,
 )
 
 _SAMPLE = {
@@ -86,10 +87,11 @@ def _static_python_import_check(module_path: str, forbidden_patterns: list) -> l
 
 class ConstructionVerifier:
     def __init__(self, loader, task_input: Optional[dict] = None,
-                 sample_inputs: Optional[dict] = None):
+                 sample_inputs: Optional[dict] = None, verifier=None):
         self.loader = loader  # ArtifactLoader
         self.task_input = task_input or {}  # swarm 级样例输入(入口节点 & 透传源)
         self.sample_inputs = sample_inputs or {}  # 显式 per-spec 覆盖;"*" = 入口默认
+        self.verifier = verifier  # M3 VerifierRegistry(model_check);None → fail-closed
         # 行为验证的拓扑 dry-run 累积:spec_id -> 该节点通过 gate 的实际样例产出,
         # 供下游按 DAG 组装代表性输入(镜像执行期 gather_inputs:中游只能取直接依赖产出)。
         self._sample_outputs: dict[str, dict] = {}
@@ -161,7 +163,9 @@ class ConstructionVerifier:
                          f"输出非 dict:{type(output).__name__}",
                          "返回满足 output_schema 的 dict")
 
-        result = RuntimeGate.check(output, spec, message=msg, policy=None)
+        # 显式注册 verifier 即视为授权构造期 model_check;否则保持 fail-closed。
+        policy = VerificationPolicy(allow_model_verification=True) if self.verifier is not None else None
+        result = RuntimeGate.check(output, spec, message=msg, policy=policy, verifier=self.verifier)
         if result.ok:
             # 仅通过 gate 的产出才向下游传播(与执行期一致),供后续节点组装输入
             self._sample_outputs[spec.spec_id] = output

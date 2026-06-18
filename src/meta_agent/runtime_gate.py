@@ -70,6 +70,7 @@ class RuntimeGate:
         spec: AgentSpec,
         message: Optional[dict] = None,
         policy: Optional[VerificationPolicy] = None,
+        verifier=None,
     ) -> GateResult:
         results: list[tuple[StructuredFeedback, FailureType]] = []
         vc = spec.verification_criteria
@@ -104,13 +105,16 @@ class RuntimeGate:
 
         # 3) machine_assertions(机判优先)
         for a in vc.machine_assertions:
+            if a.kind == "model_check":
+                # M3:交给注册的 verifier 后端;未允许 / 无后端 → fail-closed(contract)
+                gate = RuntimeGate._model_check(a, output, spec, message or {}, policy, verifier)
+                ft = gate.failure_type or FailureType.SPEC_ADHERENCE
+                for fb in gate.feedback:
+                    results.append((fb, ft))
+                continue
             try:
                 fb = RuntimeGate._check_assertion(a, output, message or {}, policy)
-                ft = (
-                    FailureType.CONTRACT
-                    if a.kind == "model_check"
-                    else FailureType(a.failure_type)
-                )
+                ft = FailureType(a.failure_type)
             except Exception as e:  # noqa: BLE001 — gate 永不因坏断言抛出,统一归为 spec_adherence
                 fb = StructuredFeedback(
                     subtype=FailureSubtype.ASSERTION_ERROR.value,
@@ -138,6 +142,28 @@ class RuntimeGate:
         return GateResult(
             ok=False, failure_type=ftype, feedback=[fb for fb, _ in results], coverage=coverage
         )
+
+    @staticmethod
+    def _model_check(a: AssertionSpec, output: dict, spec: AgentSpec, message: dict,
+                     policy: Optional[VerificationPolicy], verifier) -> GateResult:
+        """model_check 路由:未允许 / 无 backend → fail-closed(contract);否则交后端评判。"""
+        allow = bool(policy and policy.allow_model_verification)
+        if not allow:
+            return GateResult(ok=False, failure_type=FailureType.CONTRACT, feedback=[
+                StructuredFeedback(
+                    subtype="model_check_not_allowed",
+                    evidence=f"[{a.assertion_id}] model_check 在当前策略不允许",
+                    expected="改写为可机判断言,或开启 allow_model_verification 并注册 verifier 后端",
+                    actionable_fix=a.description)])
+        backend = verifier.for_kind("model_check") if verifier is not None else None
+        if backend is None:
+            return GateResult(ok=False, failure_type=FailureType.CONTRACT, feedback=[
+                StructuredFeedback(
+                    subtype="model_check_backend_missing",
+                    evidence=f"[{a.assertion_id}] allow_model_verification=True 但未注册 model_check 后端",
+                    expected="注册 BaseJudge/AspectPanel/AgentVerifier 后端后再启用",
+                    actionable_fix=a.description)])
+        return backend.verify(a, spec=spec, message=message, output=output, trace=[])
 
     @staticmethod
     def _check_assertion(
@@ -186,20 +212,6 @@ class RuntimeGate:
                 Draft202012Validator(a.expected or {}).validate(val)
             except Exception as e:  # noqa: BLE001
                 return fail(f"{a.target_path} 不满足子 schema: {e}", str(a.expected))
-        elif k == "model_check":
-            allow = bool(policy and policy.allow_model_verification)
-            if not allow:
-                # M0/M1:逼回机判(由 check() 映射成 contract)
-                return fail(
-                    "model_check 在 M0/M1 不允许;请改写为可机判断言",
-                    "可机判断言(schema/field/regex/...)",
-                    subtype="model_check_not_allowed",
-                )
-            return fail(
-                "model_check 已被策略允许,但 verifier backend 尚未注册;不能静默通过",
-                "注册 BaseJudge/AspectPanel/AgentVerifier backend 后再启用",
-                subtype="model_check_backend_missing",
-            )
         elif k == "python_assert":
             try:
                 ok = evaluate_python_assert(a.expression, output=output, message=message, value=val)
