@@ -18,7 +18,7 @@
 
 ## 当前状态
 
-**M0/M1 + opencode 对接 + 可观测 + M2 thin pipeline 已落地**(`src/meta_agent/`,145 测试,覆盖约 94%,确定性测试不依赖真实 LLM):
+**M0/M1 + opencode 对接 + 可观测 + M2(thin pipeline + task-level eval)已落地**(`src/meta_agent/`,162 测试,覆盖约 94%,确定性测试不依赖真实 LLM):
 
 | 里程碑 | 内容 | 状态 |
 |---|---|---|
@@ -27,8 +27,8 @@
 | **opencode** | `OpenCodeAdapter`(control-plane 执行后端,产物经 RuntimeGate) | ✅ |
 | **可观测** | `TraceEvent` 接入执行期与 external agent adapter(JSONL/回放数据底座) | ✅ |
 | **M2 thin** | `construct()` + Stage 1/2/3 StructuredLLM 接缝 + Stage 4 `prompt_template` + Stage 5 `ConstructionVerifier` + 受限 `python_assert` 机判后端 | ✅ |
-| **M2 eval** | Anthropic/OpenAI/OpenAI-compatible URL `StructuredLLM` adapter 已接入;对 OpenAI 兼容 provider(bitfun,`json_object` 降级)实测通过 schema smoke(稳定)与 construct+execute 端到端 smoke;系统化 task-level 成功率与失败路由评测待跑 | 🟡 |
-| **M3** | verifier 后端栈 / 校准 / claim-evidence / mutation | ⏭️ |
+| **M2 eval** | `eval_harness`(成功率 + 失败类型/阶段分布)+ `StructuredLLM` adapter(Anthropic/OpenAI/OpenAI 兼容 URL,`json_object` 降级)。对 bitfun 实测:小任务集(3 任务)成功率经 RuntimeGate 健壮化 + planner 断言收敛后 2/6 → 15/15;失败路由按 phase/failure_type 可观测 | ✅ |
+| **M3** | benchmark 级 task-level 评测 / verifier 后端栈 / 校准 / claim-evidence / mutation | ⏭️ |
 
 > 快速跑通:`pip install -e ".[dev]" && pytest`。
 

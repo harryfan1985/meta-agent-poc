@@ -225,6 +225,7 @@ class FailureSubtype(str, Enum):
     FIELD_MISMATCH = "field_mismatch"
     DECOMP_FLAW = "decomp_flaw"
     CYCLE_DETECTED = "cycle_detected"
+    ASSERTION_ERROR = "assertion_error"  # 断言自身执行异常(坏 expected/类型假设)→ spec_adherence
 
 
 class StructuredFeedback(BaseModel):

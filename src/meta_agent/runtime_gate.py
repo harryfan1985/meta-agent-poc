@@ -50,6 +50,19 @@ def _all_strings(obj: Any) -> list[str]:
     return []
 
 
+def _safe_contains(haystack: Any, needle: Any) -> bool:
+    """稳健 membership:string→子串(needle 强转字符串);list/dict/set→成员;
+    类型不匹配不抛异常,返回 False。避免模型给出非串 expected/val 时 gate 崩溃。"""
+    try:
+        if isinstance(haystack, str):
+            return str(needle) in haystack
+        if isinstance(haystack, (list, tuple, set, dict)):
+            return needle in haystack
+    except TypeError:
+        return False
+    return False
+
+
 class RuntimeGate:
     @staticmethod
     def check(
@@ -91,13 +104,22 @@ class RuntimeGate:
 
         # 3) machine_assertions(机判优先)
         for a in vc.machine_assertions:
-            fb = RuntimeGate._check_assertion(a, output, message or {}, policy)
-            if fb is not None:
+            try:
+                fb = RuntimeGate._check_assertion(a, output, message or {}, policy)
                 ft = (
                     FailureType.CONTRACT
                     if a.kind == "model_check"
                     else FailureType(a.failure_type)
                 )
+            except Exception as e:  # noqa: BLE001 — gate 永不因坏断言抛出,统一归为 spec_adherence
+                fb = StructuredFeedback(
+                    subtype=FailureSubtype.ASSERTION_ERROR.value,
+                    evidence=f"[{a.assertion_id}] 断言执行异常: {type(e).__name__}: {e}",
+                    expected="断言须可机判执行(避免类型/字段假设错误)",
+                    actionable_fix=a.description,
+                )
+                ft = FailureType.SPEC_ADHERENCE
+            if fb is not None:
                 results.append((fb, ft))
 
         coverage = VerificationCoverage(
@@ -151,10 +173,10 @@ class RuntimeGate:
                     subtype=FailureSubtype.FIELD_MISMATCH.value,
                 )
         elif k == "contains":
-            if not found or a.expected not in (val or ""):
+            if not found or not _safe_contains(val, a.expected):
                 return fail(f"{a.target_path} 未包含 {a.expected!r}", f"包含 {a.expected!r}")
         elif k == "not_contains":
-            if found and a.expected in (val or ""):
+            if found and _safe_contains(val, a.expected):
                 return fail(f"{a.target_path} 含禁止内容 {a.expected!r}", f"不含 {a.expected!r}")
         elif k == "regex_match":
             if not found or not re.search(a.expression or "", val if isinstance(val, str) else ""):
