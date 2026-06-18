@@ -18,7 +18,7 @@
 
 ## 当前状态
 
-**M0/M1 + opencode 对接 + 可观测 + M2(thin pipeline + task-level eval)已落地**(`src/meta_agent/`,162 测试,覆盖约 94%,确定性测试不依赖真实 LLM):
+**M0/M1 + opencode 对接 + 可观测 + M2(thin pipeline + task-level eval)已落地,M3 verifier 后端栈起步**(`src/meta_agent/`,180 测试,覆盖约 94%,确定性测试不依赖真实 LLM):
 
 | 里程碑 | 内容 | 状态 |
 |---|---|---|
@@ -28,7 +28,8 @@
 | **可观测** | `TraceEvent` 接入执行期与 external agent adapter(JSONL/回放数据底座) | ✅ |
 | **M2 thin** | `construct()` + Stage 1/2/3 StructuredLLM 接缝 + Stage 4 `prompt_template` + Stage 5 `ConstructionVerifier` + 受限 `python_assert` 机判后端 | ✅ |
 | **M2 eval** | `eval_harness`(成功率 + 失败类型/阶段分布)+ `StructuredLLM` adapter(Anthropic/OpenAI/OpenAI 兼容 URL,`json_object` 降级)。对 bitfun 实测:小任务集(3 任务)成功率经 RuntimeGate 健壮化 + planner 断言收敛后 2/6 → 15/15;失败路由按 phase/failure_type 可观测 | ✅ |
-| **M3** | benchmark 级 task-level 评测 / verifier 后端栈 / 校准 / claim-evidence / mutation | ⏭️ |
+| **M3 verifier 后端栈** | `VerifierBackend` 协议 + `VerifierRegistry`(首个支持者,不降级)+ `BaseJudgeBackend`/`AspectPanelBackend`(多 aspect 投票);`model_check` 接入 RuntimeGate/execute/ConstructionVerifier:未允许或无后端 → fail-closed(contract),有后端 → 评判(spec_adherence)。偏差缓解:隐生成器身份 + 结构化 verdict,解析失败=验证失败 | 🟡 |
+| **M3 其余** | 校准协议(golden cases)/ claim-evidence 残差 / mutation testing / benchmark 级评测 + 消融 / 沙箱加固 / Stage 3 真实 grounding | ⏭️ |
 
 > 快速跑通:`pip install -e ".[dev]" && pytest`。
 

@@ -39,6 +39,7 @@ def execute(
     store: Optional[ContextStore] = None,
     tool_registry=None,
     tracer=None,
+    verifier=None,
 ) -> dict:
     budget = budget or Budget()
     meter = BudgetMeter()
@@ -103,7 +104,7 @@ def execute(
                 ) from e
             meter.record_run(budget)
 
-            gate = RuntimeGate.check(output, spec, message=inputs, policy=policy)
+            gate = RuntimeGate.check(output, spec, message=inputs, policy=policy, verifier=verifier)
             tracer.emit(make_event("gate_result", stage="runtime_gate", spec_id=spec_id,
                                    gate_result=gate, latency_ms=int((monotonic() - t0) * 1000)))
             if gate.ok:
