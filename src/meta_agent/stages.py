@@ -10,7 +10,7 @@ from .codegen import prompt_template_codegen
 from .construct import Stages
 from .construction_verifier import ConstructionVerifier
 from .llm import generate_model
-from .schemas import ParsedIntent, SwarmPlan
+from .schemas import GateResult, GroundingInfo, ParsedIntent, SwarmPlan
 
 _INTENT_SYS = (
     "Compile the natural-language task into a structured intent. "
@@ -59,28 +59,50 @@ class SwarmPlanner:
 
 
 class GroundingResearcher:
-    """Stage 3:定向检索回填 grounding。M2 默认 pass-through(纯推理 agent 无需 grounding)。
-    真实 web_search 接入属 [eval]。"""
+    """Stage 3:定向检索回填 grounding。默认 pass-through(纯推理 agent 无需 grounding);
+    注入 web_search(Callable[[str], list[str]])后,按 spec 定向检索并把摘要写回 spec.grounding。"""
 
-    def __init__(self, backend=None):
+    def __init__(self, backend=None, web_search=None):
         self.backend = backend
+        self.web_search = web_search
+
+    @staticmethod
+    def _query_for(spec, plan: SwarmPlan) -> str:
+        return (f"{plan.summary} {spec.role}").strip() or spec.spec_id
 
     def ground(self, plan: SwarmPlan) -> SwarmPlan:
-        return plan
+        if self.web_search is None:
+            return plan  # 默认 pass-through
+        grounded = plan.model_copy(deep=True)
+        for spec in grounded.specs:
+            results = self.web_search(self._query_for(spec, grounded)) or []
+            if results:
+                spec.grounding = GroundingInfo(research_summary=" ".join(results)[:1000])
+        return grounded
+
+
+def _passthrough_verify(artifact, spec) -> GateResult:
+    """消融:关闭构造期验证——不门控,直接放行(Stage 5 ablation)。"""
+    return GateResult(ok=True)
 
 
 def default_stages(backend, loader, task_input: dict | None = None,
-                   sample_inputs: dict | None = None) -> Stages:
+                   sample_inputs: dict | None = None, *,
+                   with_verification: bool = True, web_search=None) -> Stages:
     """把 Stage 1/2/3(LLM 接缝)+ Stage 4(确定性模板化)+ Stage 5(验证器)装成 Stages。
 
     task_input:swarm 级样例输入,Stage 5 行为验证按 DAG 把它喂给入口节点,
     中游节点改用上游样例产出。sample_inputs 为显式 per-spec 覆盖(可选)。
+    消融旋钮:with_verification=False 关闭构造期验证;web_search 注入真实 grounding。
     """
+    verify = (
+        ConstructionVerifier(loader, task_input=task_input, sample_inputs=sample_inputs).verify
+        if with_verification else _passthrough_verify
+    )
     return Stages(
         parse=IntentParser(backend).parse,
         plan=SwarmPlanner(backend).plan,
-        ground=GroundingResearcher(backend).ground,
+        ground=GroundingResearcher(backend, web_search=web_search).ground,
         codegen=prompt_template_codegen,
-        verify=ConstructionVerifier(loader, task_input=task_input,
-                                    sample_inputs=sample_inputs).verify,
+        verify=verify,
     )

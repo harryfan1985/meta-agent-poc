@@ -111,6 +111,13 @@ class ConstitutionRule(BaseModel):
 # ---------------------------------------------------------------- spec / DAG
 
 
+class GroundingInfo(BaseModel):
+    """Stage 3 定向检索写回 spec 的外部知识(§3.3)。"""
+
+    research_summary: str = ""
+    sources: list[str] = Field(default_factory=list)  # provenance(URL/标识)
+
+
 class AgentSpec(BaseModel):
     spec_id: str
     role: str = ""
@@ -119,6 +126,7 @@ class AgentSpec(BaseModel):
     risk_tier: Literal["low", "medium", "high", "critical"] = "low"
     io_contract: IOContract
     verification_criteria: VerificationCriteria = Field(default_factory=VerificationCriteria)
+    grounding: Optional[GroundingInfo] = None  # Stage 3 写回;None=未检索
 
 
 class DagEdge(BaseModel):
