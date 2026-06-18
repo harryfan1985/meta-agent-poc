@@ -235,6 +235,25 @@ class StructuredFeedback(BaseModel):
     actionable_fix: str = ""
 
 
+# ---------- 可溯源证据 / Claim 验证(§4.5,模型判残差专用)----------
+
+
+class EvidenceRef(BaseModel):
+    source_type: Literal["spec", "input", "upstream_output", "grounding", "tool_result", "trace"]
+    ref: str  # JSON Pointer / URL / trace event id / spec clause id
+    quote_or_hash: Optional[str] = None  # 短摘录或内容 hash
+    trust_level: Literal["trusted", "verified", "untrusted", "tainted"] = "untrusted"
+    taint_tags: list[str] = Field(default_factory=list)  # external_web / user_supplied / prompt_injection
+
+
+class Claim(BaseModel):
+    claim_id: str
+    text: str
+    source_path: str  # 输出中的 JSON Pointer 或文本 span id
+    required_evidence: list[EvidenceRef] = Field(default_factory=list)
+    verification_status: Literal["unchecked", "supported", "contradicted", "insufficient"] = "unchecked"
+
+
 class VerificationCoverage(BaseModel):
     """验证充分性(§4.8):gate passed 只说已执行的检查过了,不说验得够。
     M1 填充 schema / assertion / forbidden;claim/edge/tool/regression 留 M2/M3。"""
