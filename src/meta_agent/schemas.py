@@ -254,6 +254,17 @@ class Claim(BaseModel):
     verification_status: Literal["unchecked", "supported", "contradicted", "insufficient"] = "unchecked"
 
 
+class MutationCase(BaseModel):
+    """变异测试用例(§meta-verification):往合法输出注入缺陷,验 gate 是否抓得到。"""
+
+    mutation_id: str
+    mutation_type: Literal["drop_field", "wrong_value", "forbidden_insert", "off_by_one"]
+    target_path: str = ""  # 目标字段(JSON Pointer / 顶层字段名)
+    payload: Any = None  # wrong_value 的替换值 / forbidden_insert 的注入串
+    spec_id: str = ""
+    expected_caught_by: list[str] = Field(default_factory=list)  # 期望命中的 subtype(可空)
+
+
 class VerificationCoverage(BaseModel):
     """验证充分性(§4.8):gate passed 只说已执行的检查过了,不说验得够。
     M1 填充 schema / assertion / forbidden;claim/edge/tool/regression 留 M2/M3。"""
