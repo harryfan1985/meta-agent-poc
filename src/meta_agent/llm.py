@@ -386,6 +386,7 @@ def create_structured_llm(
     timeout: float = 60.0,
     api_key_env: str | None = None,
     base_url: str | None = None,
+    structured_mode: str = "auto",  # openai 专用:auto | json_schema | json_object
     client: Any = None,
 ) -> StructuredLLM:
     if not model:
@@ -407,6 +408,7 @@ def create_structured_llm(
             timeout=timeout,
             api_key_env=api_key_env or "OPENAI_API_KEY",
             base_url=base_url,
+            structured_mode=structured_mode,
             client=client,
         )
     raise ValueError(f"unknown structured LLM provider: {provider!r}")

@@ -238,6 +238,16 @@ def test_openai_factory_preserves_compatible_base_url():
     backend = create_structured_llm("openai", "local-model", base_url="http://localhost:8000/v1")
     assert isinstance(backend, OpenAIStructuredLLM)
     assert backend.base_url == "http://localhost:8000/v1"
+    assert backend.structured_mode == "auto"  # 默认
+
+
+def test_openai_factory_threads_structured_mode():
+    """已知不支持原生 structured 的 provider 可显式 json_object,跳过必然失败的 native 尝试。"""
+    client = _FallbackClient()
+    backend = create_structured_llm("openai", "deepseek", structured_mode="json_object", client=client)
+    assert backend.structured_mode == "json_object"
+    assert backend.generate("sys", {}, SCHEMA) == {"answer": 42}
+    assert client.responses.calls == []  # native 未被尝试
 
 
 def test_generate_validated_still_performs_project_schema_check():
