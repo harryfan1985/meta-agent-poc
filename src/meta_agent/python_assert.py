@@ -10,6 +10,8 @@ from __future__ import annotations
 import ast
 from typing import Any
 
+from .sandbox import SandboxLimitError, enforce_expression_limits
+
 
 class PythonAssertError(ValueError):
     """Raised when a python_assert expression is invalid or unsafe."""
@@ -60,10 +62,10 @@ _ALLOWED_NODES = (
     ast.NotIn,
     ast.Add,
     ast.Sub,
-    ast.Mult,
     ast.Div,
     ast.FloorDiv,
     ast.Mod,
+    # 注:ast.Mult/Pow 不在允许集——见 sandbox._RESOURCE_RISK_NODES(防序列/数值重复内存膨胀)
 )
 
 
@@ -106,6 +108,10 @@ def evaluate_python_assert(
         tree = ast.parse(expression, mode="eval")
     except SyntaxError as e:
         raise PythonAssertError(f"syntax error: {e.msg}") from e
+    try:
+        enforce_expression_limits(expression, tree)  # §7.1 资源上限
+    except SandboxLimitError as e:
+        raise PythonAssertError(f"sandbox limit: {e}") from e
     _SafeExpressionValidator().visit(tree)
     code = compile(tree, "<python_assert>", "eval")
     env = {"output": output, "input": message, "value": value, **_SAFE_FUNCTIONS}
