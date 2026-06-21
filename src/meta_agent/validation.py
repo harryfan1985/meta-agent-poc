@@ -125,6 +125,32 @@ def validate_plan(plan: SwarmPlan, tool_registry: ToolRegistryLike | None = None
     return issues
 
 
+def promote_consumed_outputs(plan: SwarmPlan) -> SwarmPlan:
+    """计划规范化:把"被下游必填消费、且生产者已声明"的字段提升为生产者的 required_out。
+
+    这样生产者**自己的 gate** 就会强制它产出该字段(缺则 spec_adherence,可带反馈本地重试),
+    而不是等下游 gather_inputs 才以结构性 ContractMismatch 暴露——把"声明却没产出"从
+    不可恢复的 structural 降级为生产者处可恢复的 local 失败,显著降执行期 flakiness。
+    """
+    out_decl = {s.spec_id: set(s.io_contract.output_schema) for s in plan.specs}
+    promote: dict[str, set[str]] = {}
+    for spec in plan.specs:
+        for dep in spec.dependencies:
+            for field in spec.io_contract.required_in:
+                if field in out_decl.get(dep, set()):
+                    promote.setdefault(dep, set()).add(field)
+    if not any(promote.get(s.spec_id, set()) - set(s.io_contract.required_out) for s in plan.specs):
+        return plan  # 已满足,免深拷贝
+    new = plan.model_copy(deep=True)
+    for spec in new.specs:
+        add = promote.get(spec.spec_id)
+        if add:
+            ro = list(spec.io_contract.required_out)
+            ro += [f for f in sorted(add) if f not in ro]
+            spec.io_contract.required_out = ro
+    return new
+
+
 def surface_contract_issues(reason: str, issues: list[str]) -> SurfaceFailure:
     feedback = [
         StructuredFeedback(

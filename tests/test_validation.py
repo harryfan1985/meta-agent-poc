@@ -32,6 +32,30 @@ def test_execute_rejects_plan_dependency_dag_drift_before_running():
     assert calls["n"] == 0
 
 
+def test_promote_consumed_outputs_makes_consumed_field_required():
+    from meta_agent.validation import promote_consumed_outputs
+
+    swarm = build_swarm()
+    # 让 spec_analyzer 把 raw_signature 设为可选(声明但不必产出)
+    sa = swarm.spec("spec_analyzer")
+    sa.io_contract.required_out = ["parsed_spec"]  # 去掉 raw_signature
+    assert "raw_signature" not in sa.io_contract.required_out
+
+    new = promote_consumed_outputs(swarm.plan)
+    new_sa = next(s for s in new.specs if s.spec_id == "spec_analyzer")
+    # 下游(code_synthesizer/code_verifier)必填消费 raw_signature → 被提升回 required_out
+    assert "raw_signature" in new_sa.io_contract.required_out
+    # 原 plan 不被改(纯函数)
+    assert "raw_signature" not in swarm.spec("spec_analyzer").io_contract.required_out
+
+
+def test_promote_consumed_outputs_noop_when_already_satisfied():
+    from meta_agent.validation import promote_consumed_outputs
+
+    swarm = build_swarm()  # 良构:消费字段都已是生产者 required_out
+    assert promote_consumed_outputs(swarm.plan) is swarm.plan  # 免深拷贝,返回原对象
+
+
 def test_plan_rejects_input_not_provided_by_dependencies():
     swarm = build_swarm()
     spec = swarm.spec("code_synthesizer")
