@@ -6,7 +6,7 @@ oracle 把 swarm 最终输出里的函数源码放进 code_sandbox 跑题目自�
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -116,6 +116,63 @@ _BUILTIN: list[HumanEvalProblem] = [
               "    assert candidate('Jerry') == 4\n"),
         canonical_solution=("def count_distinct_characters(s):\n    return len(set(s.lower()))\n"),
     ),
+    HumanEvalProblem(
+        task_id="builtin/greatest_common_divisor",
+        prompt=("def greatest_common_divisor(a, b):\n"
+                "    \"\"\"Return the greatest common divisor of integers a and b.\"\"\"\n"),
+        entry_point="greatest_common_divisor",
+        test=("def check(candidate):\n"
+              "    assert candidate(3, 5) == 1\n"
+              "    assert candidate(25, 15) == 5\n"
+              "    assert candidate(0, 7) == 7\n"
+              "    assert candidate(12, 8) == 4\n"),
+        canonical_solution=("def greatest_common_divisor(a, b):\n    while b:\n        a, b = b, a % b\n    return a\n"),
+    ),
+    HumanEvalProblem(
+        task_id="builtin/flip_case",
+        prompt=("def flip_case(s):\n"
+                "    \"\"\"Swap the case of every letter in s (lower<->upper).\"\"\"\n"),
+        entry_point="flip_case",
+        test=("def check(candidate):\n"
+              "    assert candidate('') == ''\n"
+              "    assert candidate('Hello') == 'hELLO'\n"
+              "    assert candidate('aBc') == 'AbC'\n"),
+        canonical_solution=("def flip_case(s):\n    return s.swapcase()\n"),
+    ),
+    HumanEvalProblem(
+        task_id="builtin/fib",
+        prompt=("def fib(n):\n"
+                "    \"\"\"Return the n-th Fibonacci number (fib(0)=0, fib(1)=1).\"\"\"\n"),
+        entry_point="fib",
+        test=("def check(candidate):\n"
+              "    assert candidate(0) == 0\n"
+              "    assert candidate(1) == 1\n"
+              "    assert candidate(5) == 5\n"
+              "    assert candidate(10) == 55\n"),
+        canonical_solution=("def fib(n):\n    a, b = 0, 1\n    for _ in range(n):\n        a, b = b, a + b\n    return a\n"),
+    ),
+    HumanEvalProblem(
+        task_id="builtin/unique",
+        prompt=("def unique(l):\n"
+                "    \"\"\"Return the sorted list of unique elements in l.\"\"\"\n"),
+        entry_point="unique",
+        test=("def check(candidate):\n"
+              "    assert candidate([]) == []\n"
+              "    assert candidate([3, 1, 2, 2, 3]) == [1, 2, 3]\n"
+              "    assert candidate([5, 5, 5]) == [5]\n"),
+        canonical_solution=("def unique(l):\n    return sorted(set(l))\n"),
+    ),
+    HumanEvalProblem(
+        task_id="builtin/max_element",
+        prompt=("def max_element(l):\n"
+                "    \"\"\"Return the maximum element of the non-empty list l.\"\"\"\n"),
+        entry_point="max_element",
+        test=("def check(candidate):\n"
+              "    assert candidate([1, 2, 3]) == 3\n"
+              "    assert candidate([-5, -2, -9]) == -2\n"
+              "    assert candidate([7]) == 7\n"),
+        canonical_solution=("def max_element(l):\n    return max(l)\n"),
+    ),
 ]
 
 
@@ -184,3 +241,71 @@ def oracle_for_cases(problems: list[HumanEvalProblem]) -> Callable[[str, dict], 
         return make_oracle(p) if p else None
 
     return lookup
+
+
+@dataclass
+class BenchmarkReport:
+    """多次跑的 per-problem 可靠性 + 聚合 pass@1。区分 reliable / flaky / never,
+    让"pass@1=X"这种结论可解释、可信(而非单次跑撞运气)。"""
+
+    results: dict[str, list[bool]] = field(default_factory=dict)  # entry_point -> [ok per run]
+    detail: dict[str, list[str]] = field(default_factory=dict)    # entry_point -> [失败 phase/type]
+
+    @property
+    def total(self) -> int:
+        return sum(len(v) for v in self.results.values())
+
+    @property
+    def passed(self) -> int:
+        return sum(sum(v) for v in self.results.values())
+
+    @property
+    def pass_rate(self) -> float:
+        return self.passed / self.total if self.total else 0.0
+
+    def per_problem(self) -> dict[str, float]:
+        return {k: (sum(v) / len(v) if v else 0.0) for k, v in self.results.items()}
+
+    def reliable(self) -> list[str]:  # 每次都过
+        return [k for k, v in self.results.items() if v and all(v)]
+
+    def flaky(self) -> list[str]:  # 时过时不过
+        return [k for k, v in self.results.items() if 0 < sum(v) < len(v)]
+
+    def never(self) -> list[str]:  # 从没过
+        return [k for k, v in self.results.items() if v and not any(v)]
+
+    def summary(self) -> dict:
+        runs = len(next(iter(self.results.values()))) if self.results else 0
+        return {
+            "problems": len(self.results),
+            "runs_per_problem": runs,
+            "total": self.total, "passed": self.passed,
+            "pass_rate": round(self.pass_rate, 4),
+            "per_problem": {k: round(v, 4) for k, v in self.per_problem().items()},
+            "reliable": sorted(self.reliable()),
+            "flaky": sorted(self.flaky()),
+            "never": sorted(self.never()),
+        }
+
+
+def run_benchmark(problems: list[HumanEvalProblem], build, *, runs: int = 1,
+                  budget=None, on_result=None) -> BenchmarkReport:
+    """每题跑 runs 次,oracle 计分,汇总 per-problem 可靠性。
+    on_result(entry_point, run_idx, ok, outcome) 可选:用于流式打印进度(长跑防丢)。"""
+    from .eval_harness import evaluate_case  # 延迟导入避免环
+
+    report = BenchmarkReport()
+    for p in problems:
+        task, ti = to_eval_cases([p])[0]
+        oracle = make_oracle(p)
+        report.results[p.entry_point] = []
+        report.detail[p.entry_point] = []
+        for r in range(1, runs + 1):
+            o = evaluate_case(task, ti, build, budget=budget, oracle=oracle)
+            report.results[p.entry_point].append(o.ok)
+            if not o.ok:
+                report.detail[p.entry_point].append(f"{o.phase or ''}/{o.failure_type or ''}")
+            if on_result:
+                on_result(p.entry_point, r, o.ok, o)
+    return report
