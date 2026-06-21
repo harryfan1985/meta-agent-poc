@@ -63,6 +63,59 @@ _BUILTIN: list[HumanEvalProblem] = [
               "    assert candidate('ab') is False\n"),
         canonical_solution=("def is_palindrome(s):\n    return s == s[::-1]\n"),
     ),
+    # —— 更难:含边界陷阱,模型易写出"看似对实则错"的实现 ——
+    HumanEvalProblem(
+        task_id="builtin/below_zero",
+        prompt=("def below_zero(operations):\n"
+                "    \"\"\"Given deposit/withdrawal ops on a zero-start balance, return True if the\n"
+                "    running balance EVER goes strictly below zero. Balance of exactly 0 is not below.\"\"\"\n"),
+        entry_point="below_zero",
+        test=("def check(candidate):\n"
+              "    assert candidate([]) is False\n"
+              "    assert candidate([1, -1]) is False\n"      # 触底为 0,不算 below
+              "    assert candidate([1, -2, 3]) is True\n"
+              "    assert candidate([-1]) is True\n"),
+        canonical_solution=("def below_zero(operations):\n    balance = 0\n    for op in operations:\n"
+                            "        balance += op\n        if balance < 0:\n            return True\n    return False\n"),
+    ),
+    HumanEvalProblem(
+        task_id="builtin/intersperse",
+        prompt=("def intersperse(numbers, delimiter):\n"
+                "    \"\"\"Insert `delimiter` between every two consecutive elements of `numbers`.\n"
+                "    No trailing delimiter; empty input returns [].\"\"\"\n"),
+        entry_point="intersperse",
+        test=("def check(candidate):\n"
+              "    assert candidate([], 4) == []\n"
+              "    assert candidate([1], 4) == [1]\n"
+              "    assert candidate([1, 2, 3], 4) == [1, 4, 2, 4, 3]\n"),
+        canonical_solution=("def intersperse(numbers, delimiter):\n    if not numbers:\n        return []\n"
+                            "    result = [numbers[0]]\n    for n in numbers[1:]:\n        result.append(delimiter)\n"
+                            "        result.append(n)\n    return result\n"),
+    ),
+    HumanEvalProblem(
+        task_id="builtin/rolling_max",
+        prompt=("def rolling_max(numbers):\n"
+                "    \"\"\"Return a list where each element is the maximum of all elements seen so far\n"
+                "    (running maximum), same length as input.\"\"\"\n"),
+        entry_point="rolling_max",
+        test=("def check(candidate):\n"
+              "    assert candidate([]) == []\n"
+              "    assert candidate([3, 1, 2]) == [3, 3, 3]\n"
+              "    assert candidate([1, 2, 3, 2, 3, 4, 2]) == [1, 2, 3, 3, 3, 4, 4]\n"),
+        canonical_solution=("def rolling_max(numbers):\n    result = []\n    m = None\n    for n in numbers:\n"
+                            "        m = n if m is None else max(m, n)\n        result.append(m)\n    return result\n"),
+    ),
+    HumanEvalProblem(
+        task_id="builtin/count_distinct_characters",
+        prompt=("def count_distinct_characters(s):\n"
+                "    \"\"\"Count how many distinct characters s has, IGNORING case ('A' and 'a' are same).\"\"\"\n"),
+        entry_point="count_distinct_characters",
+        test=("def check(candidate):\n"
+              "    assert candidate('') == 0\n"
+              "    assert candidate('xyzXYZ') == 3\n"        # 大小写折叠
+              "    assert candidate('Jerry') == 4\n"),
+        canonical_solution=("def count_distinct_characters(s):\n    return len(set(s.lower()))\n"),
+    ),
 ]
 
 
