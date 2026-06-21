@@ -86,8 +86,13 @@ def evaluate_case(
     *,
     budget: Optional[Budget] = None,
     tracer=None,
+    oracle: Optional[Callable[[dict], bool]] = None,
 ) -> CaseOutcome:
-    """单次 construct→execute。任何失败都归因为 CaseOutcome 而非中断,便于批量统计。"""
+    """单次 construct→execute(可选 oracle 判最终输出正确性)。失败归因为 CaseOutcome 不中断。
+
+    oracle=None:成功=端到端跑通(完成率)。oracle 给定:成功=跑通 **且** oracle(out)=True
+    (正确率)——失败归 phase=oracle / failure_type=incorrect。
+    """
     stages, loader = build(task_input)
     try:
         swarm = construct(task, stages, budget=budget, tracer=tracer)
@@ -98,12 +103,21 @@ def evaluate_case(
                            failure_type="exception", detail=f"{type(e).__name__}: {e}")
     try:
         loader.bind(swarm)
-        execute(swarm, task_input, budget=budget, tracer=tracer)
+        out = execute(swarm, task_input, budget=budget, tracer=tracer)
     except SurfaceFailure as e:
         return _attribute(e, "execute")
     except Exception as e:  # noqa: BLE001
         return CaseOutcome(task="", run=0, ok=False, phase="execute",
                            failure_type="exception", detail=f"{type(e).__name__}: {e}")
+    if oracle is not None:
+        try:
+            correct = bool(oracle(out if isinstance(out, dict) else {}))
+        except Exception as e:  # noqa: BLE001 — oracle 异常计为不正确
+            return CaseOutcome(task="", run=0, ok=False, phase="oracle",
+                               failure_type="incorrect", detail=f"oracle error: {type(e).__name__}: {e}")
+        if not correct:
+            return CaseOutcome(task="", run=0, ok=False, phase="oracle",
+                               failure_type="incorrect", detail="oracle rejected output")
     return CaseOutcome(task="", run=0, ok=True)
 
 
@@ -113,12 +127,15 @@ def run_eval(
     *,
     runs: int = 1,
     budget: Optional[Budget] = None,
+    oracle_for: Optional[Callable[[str, dict], Optional[Callable[[dict], bool]]]] = None,
 ) -> EvalReport:
-    """对每个 (task, task_input) 跑 runs 次,汇总成 EvalReport。"""
+    """对每个 (task, task_input) 跑 runs 次,汇总成 EvalReport。
+    oracle_for(task, task_input) -> oracle|None:按用例提供正确性 oracle(benchmark 用)。"""
     report = EvalReport()
     for task, task_input in cases:
+        oracle = oracle_for(task, task_input) if oracle_for else None
         for r in range(1, runs + 1):
-            outcome = evaluate_case(task, task_input, build, budget=budget)
+            outcome = evaluate_case(task, task_input, build, budget=budget, oracle=oracle)
             outcome.task = task
             outcome.run = r
             report.outcomes.append(outcome)
