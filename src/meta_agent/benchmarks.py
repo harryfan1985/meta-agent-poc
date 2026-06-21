@@ -88,8 +88,10 @@ def to_eval_cases(problems: list[HumanEvalProblem]) -> list[tuple[str, dict]]:
     """映射成 eval_harness 的 (task, task_input)。"""
     cases = []
     for p in problems:
-        task = ("Implement the Python function for the problem below and return the COMPLETE "
-                "function source (signature + body) in output field `code`.\n\n" + p.prompt)
+        task = ("Implement the Python function for the problem below. This is an atomic task: "
+                "design a SINGLE-agent swarm — one agent that reads input field `prompt` and "
+                "returns output field `code` containing the COMPLETE function source "
+                "(signature + body).\n\n" + p.prompt)
         cases.append((task, {"prompt": p.prompt, "entry_point": p.entry_point}))
     return cases
 

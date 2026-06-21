@@ -34,7 +34,7 @@
 | **M3 mutation** | `mutations`:往合法输出注入缺陷(drop/wrong/forbidden/off-by-one),验 gate 抓得到;暴露存活变异(验证器盲区)。kill_rate 报告 | 🟡 |
 | **M3 沙箱** | `sandbox`:python_assert 资源边界(表达式长度/AST 节点数/深度上限 + 禁 `*`/`**` 防内存膨胀);net/fs/import 已被表达式语法层挡掉(§7.1) | 🟡 |
 | **M3 消融** | `ablation`:在 `eval_harness` 上切换验证/grounding 旋钮量化各自贡献;Stage 3 grounding 接缝(注入 `web_search` 写回 `spec.grounding`)。框架就绪 | 🟡 |
-| **M3 benchmark** | `code_sandbox`(子进程 + setrlimit + wall 超时跑不可信代码)+ `benchmarks`(HumanEval 加载 + 确定性正确性 oracle)+ `eval_harness`/`ablation` 接 oracle 计分。bitfun 实测 builtin 子集 pass@1=0/3(失败在 construct/execute,oracle 计分链路验证通过)——thin 流水线 codegen 待加强 | 🟡 |
+| **M3 benchmark** | `code_sandbox`(子进程 + setrlimit + wall 超时跑不可信代码)+ `benchmarks`(HumanEval 加载 + 确定性正确性 oracle)+ `eval_harness`/`ablation` 接 oracle 计分。bitfun 实测 builtin 子集 pass@1 经三处修复(无围栏 codegen + preflight 数据流检查 + 原子任务单 agent 框定)**0/3 → 10/12(~83%)** | 🟡 |
 | **M3 ⏭️** | 提升 HumanEval pass@1(code 专用 spec/codegen)/ 真实 HumanEval 全集 + 更多数据集 / verifier 防偏差 swap-test / 真实 web_search provider | ⏭️ |
 
 > 快速跑通:`pip install -e ".[dev]" && pytest`。
