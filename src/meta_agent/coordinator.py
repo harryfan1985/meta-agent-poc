@@ -32,6 +32,19 @@ from .trace import NullTracer, make_event
 from .validation import assert_valid_plan
 
 
+def _resolve_producers(spec, unresolved, swarm) -> Optional[dict]:
+    """对每个 unresolved 输入字段,找在 output_schema 里声明它的依赖(本应产出却没产出)。
+    全部可定位 → {producer_spec_id: [fields]};任一字段无依赖声明 → None(真分解缺陷,不可恢复)。"""
+    producers: dict[str, list] = {}
+    for field in unresolved:
+        owner = next((d for d in spec.dependencies
+                      if field in swarm.spec(d).io_contract.output_schema), None)
+        if owner is None:
+            return None
+        producers.setdefault(owner, []).append(field)
+    return producers
+
+
 def execute(
     swarm: ExecutableSwarm,
     task_input: dict,
@@ -67,7 +80,26 @@ def execute(
             try:
                 inputs = store.gather_inputs(spec_id, swarm)
             except ContractMismatch as e:
-                # 缺字段/歧义 = 分解缺陷 → structural;M1 上浮(replan 属 M2)
+                # 缺字段恢复(§5 upstream):若 unresolved 字段由某依赖声明却未产出,带反馈重跑该依赖
+                # (bounded)。歧义(conflicts)或字段无人声明 = 真分解缺陷 → structural 上浮。
+                producers = None if e.conflicts else _resolve_producers(spec, e.unresolved, swarm)
+                if producers and all(upstream_reruns[p] < budget.max_upstream_reruns for p in producers):
+                    for producer, fields in producers.items():
+                        upstream_reruns[producer] += 1
+                        history[producer] = history[producer] + [StructuredFeedback(
+                            subtype=FailureSubtype.FIELD_MISMATCH.value,
+                            evidence=f"下游 {spec_id} 需要字段 {fields},上游 {producer} 已声明却未产出",
+                            expected=f"output 必须包含已声明字段 {fields}",
+                            actionable_fix=f"产出 output_schema 已声明的字段 {fields}",
+                        ).model_dump()]
+                        store.invalidate(producer)
+                    tracer.emit(make_event("recovery", stage="node", spec_id=spec_id,
+                                           recovery_kind="upstream",
+                                           payload={"reason": "contract_mismatch",
+                                                    "targets": sorted(producers), "detail": str(e)}))
+                    i = min(order.index(p) for p in producers)  # 回退到最早责任上游重跑
+                    continue
+                # 不可恢复 / 上游重跑触顶 → structural 上浮(replan 属 construct)
                 tracer.emit(make_event("recovery", stage="node", spec_id=spec_id,
                                        recovery_kind="structural",
                                        payload={"reason": "contract_mismatch", "detail": str(e)}))

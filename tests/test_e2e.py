@@ -5,6 +5,33 @@ from meta_agent.fixtures.function_completion import TASK_INPUT_EXAMPLE, build_sw
 from meta_agent.schemas import ContractMismatch, SurfaceFailure
 
 
+def test_contract_mismatch_recovers_via_upstream_rerun():
+    """上游声明却没产出字段 → 带反馈重跑上游,补出后下游成功(§5 upstream 恢复)。"""
+    from meta_agent.artifacts import ArtifactLoader
+    from meta_agent.schemas import (
+        AgentArtifact, AgentSpec, DagEdge, ExecutableSwarm, FieldSpec, IOContract, SwarmPlan,
+    )
+
+    f = FieldSpec(type="string", description="x")
+    a = AgentSpec(spec_id="a", io_contract=IOContract(
+        output_schema={"out_a": f, "need_b": f}, required_out=["out_a"]))  # need_b 声明但可选
+    b = AgentSpec(spec_id="b", dependencies=["a"], io_contract=IOContract(
+        input_schema={"need_b": f}, required_in=["need_b"],
+        output_schema={"out_b": f}, required_out=["out_b"]))
+    plan = SwarmPlan(swarm_name="m", specs=[a, b], dag_edges=[DagEdge(from_spec="a", to_spec="b")])
+
+    def ha(message, history):  # 首跑漏 need_b;收到反馈(history 非空)后补上
+        return {"out_a": "x", "need_b": "y"} if history else {"out_a": "x"}
+
+    fixtures = {"ha": ha, "hb": lambda m, h: {"out_b": "z"}}
+    swarm = ExecutableSwarm(plan=plan, artifacts={
+        "a": AgentArtifact(spec_id="a", handler_ref="ha", passed=True),
+        "b": AgentArtifact(spec_id="b", handler_ref="hb", passed=True)})
+    ArtifactLoader(fixture_registry=fixtures).bind(swarm)
+
+    assert execute(swarm, {}) == {"out_b": "z"}  # 上游重跑补出 need_b → b 端到端成功
+
+
 def test_e2e01_appendix_a_end_to_end_pass():
     """M0 验收:has_close_elements 4-agent swarm 端到端 PASS。"""
     swarm = build_swarm()
