@@ -50,10 +50,12 @@ def test_e2e05_contract_misalignment_surfaces_structural():
     )
 
     f = FieldSpec(type="string", description="x")
+    # a 声明 need_b 于 output_schema(过 preflight 数据流静态检查),但 handler 运行时不吐它
+    # → 这是 preflight 抓不到、只能在执行期 gather_inputs 暴露的 structural 错配。
     a = AgentSpec(spec_id="a", io_contract=IOContract(
-        output_schema={"out_a": f}, required_out=["out_a"]))
+        output_schema={"out_a": f, "need_b": f}, required_out=["out_a"]))
     b = AgentSpec(spec_id="b", dependencies=["a"], io_contract=IOContract(
-        input_schema={"need_b": f}, required_in=["need_b"],  # a 不产出 need_b → 错配
+        input_schema={"need_b": f}, required_in=["need_b"],
         output_schema={"out_b": f}, required_out=["out_b"]))
     plan = SwarmPlan(swarm_name="misaligned", specs=[a, b],
                      dag_edges=[DagEdge(from_spec="a", to_spec="b")])

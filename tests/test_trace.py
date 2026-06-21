@@ -52,7 +52,9 @@ def test_contract_mismatch_emits_structural_recovery():
     )
 
     f = FieldSpec(type="string", description="x")
-    a = AgentSpec(spec_id="a", io_contract=IOContract(output_schema={"out_a": f}, required_out=["out_a"]))
+    # a 声明 need_b 但 handler 不吐 → preflight 通过,执行期 gather_inputs 才暴露 structural。
+    a = AgentSpec(spec_id="a", io_contract=IOContract(
+        output_schema={"out_a": f, "need_b": f}, required_out=["out_a"]))
     b = AgentSpec(spec_id="b", dependencies=["a"], io_contract=IOContract(
         input_schema={"need_b": f}, required_in=["need_b"],
         output_schema={"out_b": f}, required_out=["out_b"]))
