@@ -32,6 +32,14 @@ def test_execute_rejects_plan_dependency_dag_drift_before_running():
     assert calls["n"] == 0
 
 
+def test_plan_rejects_input_not_provided_by_dependencies():
+    swarm = build_swarm()
+    spec = swarm.spec("code_synthesizer")
+    spec.io_contract.required_in = spec.io_contract.required_in + ["goal"]  # 无上游产出 goal
+    issues = validate_plan(swarm.plan)
+    assert any("code_synthesizer" in i and "required inputs not provided" in i for i in issues)
+
+
 def test_plan_rejects_cyclic_dag():
     swarm = build_swarm()
     swarm.plan.dag_edges.append(DagEdge(from_spec="code_verifier", to_spec="spec_analyzer"))

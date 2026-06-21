@@ -59,6 +59,7 @@ def validate_plan(plan: SwarmPlan, tool_registry: ToolRegistryLike | None = None
         except DagCycleError as e:
             issues.append(f"dag has a cycle: {e}")
 
+    out_fields = {s.spec_id: set(s.io_contract.output_schema) for s in plan.specs}
     for spec in plan.specs:
         declared = set(spec.dependencies)
         unknown_deps = sorted(declared - known)
@@ -69,6 +70,17 @@ def validate_plan(plan: SwarmPlan, tool_registry: ToolRegistryLike | None = None
             issues.append(
                 f"{spec.spec_id}: dependencies {sorted(declared)} != dag predecessors {sorted(expected)}"
             )
+
+        # 数据流可追溯性:非入口节点的每个必填输入必须由某个依赖的 output_schema 提供
+        # (镜像执行期 gather_inputs:中游只能读直接依赖的产出)。入口节点输入来自 task_input,
+        # 无法静态校验,跳过。闭合此 preflight 缺口,坏数据流在构造期即触发重规划而非执行期才崩。
+        if declared and not unknown_deps:
+            provided = set().union(*(out_fields.get(d, set()) for d in declared))
+            missing_in = sorted(set(spec.io_contract.required_in) - provided)
+            if missing_in:
+                issues.append(
+                    f"{spec.spec_id}: required inputs not provided by dependencies: {missing_in}"
+                )
 
         missing_required_tools = sorted(set(spec.verification_criteria.required_tools) - set(spec.tools))
         if missing_required_tools:

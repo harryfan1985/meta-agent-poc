@@ -21,6 +21,8 @@ def synthesize_system_prompt(spec: AgentSpec, plan: SwarmPlan) -> str:
         f"Input fields: {in_fields}.",
         f"Output ONLY a JSON object with fields: {out_fields}.",
         f"Required output fields: {', '.join(io.required_out) or '(none)'}.",
+        "Put raw field values directly in the JSON; never wrap a value in markdown code "
+        "fences (```), and for code fields emit the complete source as plain text.",
     ]
     grounding = getattr(spec, "grounding", None)
     if grounding and getattr(grounding, "research_summary", ""):
