@@ -52,11 +52,13 @@ def run_ablation(
     build_for_config: Callable[[AblationConfig], BuildFn],
     *,
     runs: int = 1,
+    oracle_for=None,
 ) -> AblationReport:
-    """对每个配置构造对应的 build(注入相应 Stages 旋钮)并跑 eval_harness。"""
+    """对每个配置构造对应的 build(注入相应 Stages 旋钮)并跑 eval_harness。
+    oracle_for 透传给 run_eval:消融按正确性(而非完成率)计分时使用。"""
     report = AblationReport()
     for cfg in configs:
-        eval_report = run_eval(cases, build_for_config(cfg), runs=runs)
+        eval_report = run_eval(cases, build_for_config(cfg), runs=runs, oracle_for=oracle_for)
         report.rows.append((cfg, eval_report))
     return report
 
