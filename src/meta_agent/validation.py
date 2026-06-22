@@ -33,10 +33,14 @@ def _rule_applies(rule, spec) -> bool:
     return rule.scope in {"global", "domain", "swarm", "agent"}
 
 
-def validate_plan(plan: SwarmPlan, tool_registry: ToolRegistryLike | None = None) -> list[str]:
-    """校验 DAG、工具注册、policy 与 constitution 的 construction-time 约束。"""
+def validate_plan(plan: SwarmPlan, tool_registry: ToolRegistryLike | None = None,
+                  max_specs: int | None = None) -> list[str]:
+    """校验 DAG、工具注册、policy 与 constitution 的 construction-time 约束。
+    max_specs:节点数上限(原子任务设 1 强制单 agent);超限属 contract,经 preflight→重规划。"""
     issues: list[str] = []
     spec_ids = [s.spec_id for s in plan.specs]
+    if max_specs is not None and len(plan.specs) > max_specs:
+        issues.append(f"plan has {len(plan.specs)} specs, exceeds max_specs={max_specs}")
     counts = Counter(spec_ids)
     duplicates = sorted([spec_id for spec_id, count in counts.items() if count > 1])
     if duplicates:
@@ -171,7 +175,8 @@ def surface_contract_issues(reason: str, issues: list[str]) -> SurfaceFailure:
     )
 
 
-def assert_valid_plan(plan: SwarmPlan, tool_registry: ToolRegistryLike | None = None) -> None:
-    issues = validate_plan(plan, tool_registry=tool_registry)
+def assert_valid_plan(plan: SwarmPlan, tool_registry: ToolRegistryLike | None = None,
+                      max_specs: int | None = None) -> None:
+    issues = validate_plan(plan, tool_registry=tool_registry, max_specs=max_specs)
     if issues:
         raise surface_contract_issues("plan preflight failed", issues)

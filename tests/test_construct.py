@@ -7,12 +7,16 @@ from meta_agent.construct import Stages, construct
 from meta_agent.fixtures.function_completion import build_plan
 from meta_agent.schemas import (
     AgentArtifact,
+    AgentSpec,
     Budget,
     FailureType,
+    FieldSpec,
     GateResult,
+    IOContract,
     ParsedIntent,
     StructuredFeedback,
     SurfaceFailure,
+    SwarmPlan,
 )
 from meta_agent.trace import ListTracer
 
@@ -76,6 +80,24 @@ def test_contract_triggers_replan():
 
     construct("t", _stages(verify=verify, plan=plan))
     assert plan_calls[0] == 2  # contract → Stage 2 重规划一次
+
+
+def test_max_specs_replans_to_single_node():
+    """max_specs=1:planner 首次返回多节点 → preflight 拒 → 重规划为单节点 → 成功。"""
+    calls = [0]
+
+    def plan(pi):
+        calls[0] += 1
+        if calls[0] == 1:
+            return build_plan()  # 4 specs > 1 → 被拒
+        spec = AgentSpec(spec_id="solo", io_contract=IOContract(
+            output_schema={"answer": FieldSpec(type="string", description="a")}, required_out=["answer"]))
+        return SwarmPlan(swarm_name="s", specs=[spec], dag_edges=[])
+
+    swarm = construct("t", _stages(verify=lambda a, s: GateResult(ok=True), plan=plan),
+                      budget=Budget(max_specs=1))
+    assert calls[0] == 2  # 多节点被拒 → 重规划一次为单节点
+    assert set(swarm.artifacts) == {"solo"}
 
 
 def test_preflight_failure_triggers_replan():

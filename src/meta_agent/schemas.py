@@ -317,6 +317,7 @@ class Budget(BaseModel):
     max_construct_passes: int = 3  # 构造期验证 pass(M2)
     max_replans: int = 2  # structural 重规划(M2)
     bon_n: int = 1  # §3.4 BoN 候选数,1=关闭
+    max_specs: Optional[int] = None  # 计划节点数上限(原子任务设 1 强制单 agent);None=不限
 
 
 # ---------------------------------------------------------------- tools (§3.6 / §4.4)

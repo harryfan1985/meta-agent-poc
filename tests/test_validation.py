@@ -32,6 +32,13 @@ def test_execute_rejects_plan_dependency_dag_drift_before_running():
     assert calls["n"] == 0
 
 
+def test_validate_plan_max_specs():
+    swarm = build_swarm()  # 4 specs
+    assert any("exceeds max_specs=1" in i for i in validate_plan(swarm.plan, max_specs=1))
+    assert not any("max_specs" in i for i in validate_plan(swarm.plan, max_specs=4))
+    assert not any("max_specs" in i for i in validate_plan(swarm.plan))  # None=不限
+
+
 def test_promote_consumed_outputs_makes_consumed_field_required():
     from meta_agent.validation import promote_consumed_outputs
 
