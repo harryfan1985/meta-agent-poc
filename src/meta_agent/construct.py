@@ -69,11 +69,11 @@ def construct(
     while True:
         try:
             plan = stages.plan(parsed)
-            assert_valid_plan(plan, tool_registry=tool_registry)  # registry.validate + constitution
+            assert_valid_plan(plan, tool_registry=tool_registry, max_specs=budget.max_specs)
             plan = stages.ground(plan)
             # 规范化:被下游消费的字段提升为生产者 required_out,降执行期数据流 flakiness
             plan = promote_consumed_outputs(plan)
-            assert_valid_plan(plan, tool_registry=tool_registry)
+            assert_valid_plan(plan, tool_registry=tool_registry, max_specs=budget.max_specs)
         except SurfaceFailure as preflight_fail:
             # 仅 contract 类(计划/DAG/constitution 预检)→ Stage 2 重规划;
             # 其它(如 Stage1/2 模型失败)如实 surface。

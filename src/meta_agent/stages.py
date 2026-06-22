@@ -21,6 +21,8 @@ _INTENT_SYS = (
 _PLAN_SYS = (
     "Decompose the task into a DAG of AgentSpecs using the FEWEST agents that cleanly "
     "separate concerns (1-4; use a SINGLE agent when the task is atomic). "
+    "If the task description explicitly asks for a single agent, you MUST output exactly ONE "
+    "AgentSpec with an empty dag_edges list — do not add helper/validator/formatter agents. "
     "Each spec needs role, io_contract (typed input/output fields), dependencies, "
     "and non-empty verification_criteria (>=1 behavioral assertion, >=1 forbidden pattern). "
     "Pick forbidden patterns that the agent output will never legitimately contain "
