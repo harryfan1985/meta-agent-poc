@@ -95,7 +95,8 @@ def evaluate_case(
     """
     stages, loader = build(task_input)
     try:
-        swarm = construct(task, stages, budget=budget, tracer=tracer)
+        swarm = construct(task, stages, budget=budget, tracer=tracer,
+                          available_inputs=set(task_input or {}))
     except SurfaceFailure as e:
         return _attribute(e, "construct")
     except Exception as e:  # noqa: BLE001 — 评测稳健性:任何异常计为失败

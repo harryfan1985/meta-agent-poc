@@ -39,6 +39,20 @@ def test_validate_plan_max_specs():
     assert not any("max_specs" in i for i in validate_plan(swarm.plan))  # None=不限
 
 
+def test_validate_plan_entry_node_inputs_must_be_in_task_input():
+    swarm = build_swarm()
+    sa = swarm.spec("spec_analyzer")  # 入口节点,required_in=[raw_signature, docstring]
+    # task_input 只给 raw_signature → docstring 缺
+    issues = validate_plan(swarm.plan, available_inputs={"raw_signature"})
+    assert any("spec_analyzer" in i and "entry-node required inputs not in task input" in i
+               and "docstring" in i for i in issues)
+    # 给全 → 无此 issue
+    assert not any("entry-node required inputs" in i
+                   for i in validate_plan(swarm.plan, available_inputs={"raw_signature", "docstring"}))
+    # 不给 available_inputs → 跳过(向后兼容)
+    assert not any("entry-node required inputs" in i for i in validate_plan(swarm.plan))
+
+
 def test_promote_consumed_outputs_makes_consumed_field_required():
     from meta_agent.validation import promote_consumed_outputs
 

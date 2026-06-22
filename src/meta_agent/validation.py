@@ -34,9 +34,10 @@ def _rule_applies(rule, spec) -> bool:
 
 
 def validate_plan(plan: SwarmPlan, tool_registry: ToolRegistryLike | None = None,
-                  max_specs: int | None = None) -> list[str]:
+                  max_specs: int | None = None, available_inputs=None) -> list[str]:
     """校验 DAG、工具注册、policy 与 constitution 的 construction-time 约束。
-    max_specs:节点数上限(原子任务设 1 强制单 agent);超限属 contract,经 preflight→重规划。"""
+    max_specs:节点数上限(原子任务设 1 强制单 agent);超限属 contract,经 preflight→重规划。
+    available_inputs:task_input 的字段键;给了则校验入口节点 required_in ⊆ 它。"""
     issues: list[str] = []
     spec_ids = [s.spec_id for s in plan.specs]
     if max_specs is not None and len(plan.specs) > max_specs:
@@ -76,14 +77,21 @@ def validate_plan(plan: SwarmPlan, tool_registry: ToolRegistryLike | None = None
             )
 
         # 数据流可追溯性:非入口节点的每个必填输入必须由某个依赖的 output_schema 提供
-        # (镜像执行期 gather_inputs:中游只能读直接依赖的产出)。入口节点输入来自 task_input,
-        # 无法静态校验,跳过。闭合此 preflight 缺口,坏数据流在构造期即触发重规划而非执行期才崩。
+        # (镜像执行期 gather_inputs:中游只能读直接依赖的产出)。入口节点输入来自 task_input:
+        # 给了 available_inputs 就校验(入口 required_in ⊆ task_input 键),否则跳过。
+        # 闭合此 preflight 缺口,坏数据流在构造期即触发重规划而非执行期才崩。
         if declared and not unknown_deps:
             provided = set().union(*(out_fields.get(d, set()) for d in declared))
             missing_in = sorted(set(spec.io_contract.required_in) - provided)
             if missing_in:
                 issues.append(
                     f"{spec.spec_id}: required inputs not provided by dependencies: {missing_in}"
+                )
+        elif not declared and available_inputs is not None:
+            missing_in = sorted(set(spec.io_contract.required_in) - set(available_inputs))
+            if missing_in:
+                issues.append(
+                    f"{spec.spec_id}: entry-node required inputs not in task input: {missing_in}"
                 )
 
         missing_required_tools = sorted(set(spec.verification_criteria.required_tools) - set(spec.tools))
@@ -176,7 +184,8 @@ def surface_contract_issues(reason: str, issues: list[str]) -> SurfaceFailure:
 
 
 def assert_valid_plan(plan: SwarmPlan, tool_registry: ToolRegistryLike | None = None,
-                      max_specs: int | None = None) -> None:
-    issues = validate_plan(plan, tool_registry=tool_registry, max_specs=max_specs)
+                      max_specs: int | None = None, available_inputs=None) -> None:
+    issues = validate_plan(plan, tool_registry=tool_registry, max_specs=max_specs,
+                           available_inputs=available_inputs)
     if issues:
         raise surface_contract_issues("plan preflight failed", issues)
