@@ -86,7 +86,8 @@ def test_run_eval_all_pass():
 
 
 def test_attributes_construct_spec_adherence_failure():
-    report = run_eval([("t", {})], _build_construct_fail(FailureType.SPEC_ADHERENCE),
+    # task_input 满足 build_plan 入口节点(raw_signature/docstring),让失败发生在 verify 阶段而非 preflight
+    report = run_eval([("t", dict(TASK_INPUT_EXAMPLE))], _build_construct_fail(FailureType.SPEC_ADHERENCE),
                       runs=2, budget=Budget(max_construct_passes=2))
     assert report.passed == 0
     assert report.failure_by_phase() == {"construct": 2}
@@ -94,7 +95,7 @@ def test_attributes_construct_spec_adherence_failure():
 
 
 def test_attributes_construct_contract_failure():
-    report = run_eval([("t", {})], _build_construct_fail(FailureType.CONTRACT),
+    report = run_eval([("t", dict(TASK_INPUT_EXAMPLE))], _build_construct_fail(FailureType.CONTRACT),
                       runs=1, budget=Budget(max_replans=1))
     assert report.failure_by_phase() == {"construct": 1}
     assert report.failure_by_type() == {"contract": 1}
